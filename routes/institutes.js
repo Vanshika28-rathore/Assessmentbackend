@@ -141,6 +141,17 @@ router.get('/', verifyAdmin, async (req, res) => {
                 i.display_name,
                 i.created_at,
                 i.is_active,
+                i.registration_status,
+                i.registration_start_time,
+                i.registration_deadline,
+                CASE 
+                    WHEN i.registration_status = 'closed' THEN false
+                    WHEN i.registration_status = 'paused' THEN false
+                    WHEN i.registration_start_time IS NOT NULL AND i.registration_start_time > NOW() THEN false
+                    WHEN i.registration_deadline IS NULL THEN true
+                    WHEN i.registration_deadline > NOW() THEN true
+                    ELSE false
+                END as is_registration_open,
                 COUNT(DISTINCT s.id) as student_count,
                 COALESCE(
                     (
@@ -159,7 +170,7 @@ router.get('/', verifyAdmin, async (req, res) => {
             FROM institutes i
             LEFT JOIN students s ON LOWER(s.institute) = i.name
             WHERE i.is_active = true
-            GROUP BY i.id, i.name, i.display_name, i.created_at, i.is_active
+            GROUP BY i.id, i.name, i.display_name, i.created_at, i.is_active, i.registration_status, i.registration_start_time, i.registration_deadline
             ORDER BY i.created_at DESC
         `);
 
@@ -852,6 +863,160 @@ router.get('/students/:studentId/resume', verifyAdmin, async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch student resume',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * PUT /api/institutes/:id/registration-control
+ * Update registration status and deadline for an institute
+ */
+router.put('/:id/registration-control', verifyAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { registration_status, registration_start_time, registration_deadline } = req.body;
+
+        // Validate status
+        const validStatuses = ['open', 'closed', 'paused'];
+        if (registration_status && !validStatuses.includes(registration_status)) {
+            return res.status(400).json({
+                success: false,
+                message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+            });
+        }
+
+        // Build update query dynamically
+        const updates = [];
+        const values = [];
+        let paramCount = 1;
+
+        if (registration_status !== undefined) {
+            updates.push(`registration_status = $${paramCount}`);
+            values.push(registration_status);
+            paramCount++;
+        }
+
+        if (registration_start_time !== undefined) {
+            updates.push(`registration_start_time = $${paramCount}`);
+            values.push(registration_start_time || null);
+            paramCount++;
+        }
+
+        if (registration_deadline !== undefined) {
+            updates.push(`registration_deadline = $${paramCount}`);
+            values.push(registration_deadline || null);
+            paramCount++;
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No fields to update'
+            });
+        }
+
+        values.push(id);
+        const query = `
+            UPDATE institutes 
+            SET ${updates.join(', ')}
+            WHERE id = $${paramCount}
+            RETURNING id, name, display_name, registration_status, registration_start_time, registration_deadline
+        `;
+
+        const result = await pool.query(query, values);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Institute not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Registration control updated successfully',
+            institute: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error updating registration control:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update registration control',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * GET /api/institutes/:id/registration-status
+ * Get registration status for an institute (public endpoint for registration page)
+ */
+router.get('/:id/registration-status', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `SELECT 
+                id, 
+                display_name, 
+                registration_status,
+                registration_start_time,
+                registration_deadline,
+                CASE 
+                    WHEN registration_status = 'closed' THEN false
+                    WHEN registration_status = 'paused' THEN false
+                    WHEN registration_start_time IS NOT NULL AND registration_start_time > NOW() THEN false
+                    WHEN registration_deadline IS NULL THEN true
+                    WHEN registration_deadline > NOW() THEN true
+                    ELSE false
+                END as is_registration_open
+            FROM institutes 
+            WHERE id = $1 AND is_active = true`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Institute not found'
+            });
+        }
+
+        const institute = result.rows[0];
+        let message = '';
+
+        if (institute.registration_status === 'closed') {
+            message = 'Registration is closed for this institute';
+        } else if (institute.registration_status === 'paused') {
+            message = 'Registration is temporarily paused';
+        } else if (institute.registration_start_time && new Date() < new Date(institute.registration_start_time)) {
+            message = `Registration will open on ${new Date(institute.registration_start_time).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`;
+        } else if (institute.registration_deadline && new Date() > new Date(institute.registration_deadline)) {
+            message = `Registration deadline has passed (${new Date(institute.registration_deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST)`;
+        } else if (institute.registration_deadline) {
+            message = `Registration open until ${new Date(institute.registration_deadline).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`;
+        } else {
+            message = 'Registration is open';
+        }
+
+        res.json({
+            success: true,
+            institute: {
+                id: institute.id,
+                display_name: institute.display_name,
+                registration_status: institute.registration_status,
+                registration_start_time: institute.registration_start_time,
+                registration_deadline: institute.registration_deadline,
+                is_registration_open: institute.is_registration_open,
+                message
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching registration status:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch registration status',
             error: error.message
         });
     }

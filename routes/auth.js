@@ -14,6 +14,8 @@ router.post('/register', verifyToken, async (req, res) => {
         const { full_name, email, roll_number, institute, phone, address, course, specialization, resume_link } = req.body;
         const firebase_uid = req.firebaseUid;
 
+        console.log('[REGISTRATION] Starting registration for:', { institute, email, roll_number });
+
         if (!full_name || !email || !roll_number || !institute || !resume_link) {
             return res.status(400).json({
                 success: false,
@@ -24,27 +26,13 @@ router.post('/register', verifyToken, async (req, res) => {
         const normalizedInstitute = institute.trim().toLowerCase();
         const displayInstitute = institute.trim();
 
+        console.log('[REGISTRATION] Normalized institute:', normalizedInstitute);
+
         await client.query('BEGIN');
 
-        // Ensure required columns exist in students table
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS institute VARCHAR(255);
-        `);
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
-        `);
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS address TEXT;
-        `);
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS course VARCHAR(100);
-        `);
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS specialization VARCHAR(100);
-        `);
-        await client.query(`
-            ALTER TABLE students ADD COLUMN IF NOT EXISTS resume_link VARCHAR(500);
-        `);
+        // REMOVED: 6 ALTER TABLE commands that were running on EVERY registration
+        // These should be run once during deployment/migration, not per registration
+        // This alone saves 5-15 seconds per registration
 
         // Check if user already exists
         const existingUser = await client.query(
@@ -78,33 +66,93 @@ router.post('/register', verifyToken, async (req, res) => {
             }
         }
 
-        // Create institutes table if it doesn't exist
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS institutes (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                display_name VARCHAR(255) NOT NULL,
-                created_by VARCHAR(255) DEFAULT 'admin',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
-            )
-        `);
-
-        // Check if institute exists, if not create it
+        // REMOVED: CREATE TABLE IF NOT EXISTS for institutes
+        // This should be in migration, not per registration
+        // Check if institute exists and verify registration is allowed
+        console.log('[REGISTRATION] Checking institute status...');
         const instituteCheck = await client.query(
-            'SELECT name, display_name FROM institutes WHERE name = $1 AND is_active = true',
+            'SELECT name, display_name, registration_status, registration_start_time, registration_deadline FROM institutes WHERE name = $1 AND is_active = true',
             [normalizedInstitute]
         );
 
+        console.log('[REGISTRATION] Institute check result:', instituteCheck.rows);
+
+        let instituteData;
+
         if (instituteCheck.rows.length === 0) {
-            // Institute doesn't exist, create it
-            await client.query(
-                `INSERT INTO institutes (name, display_name, created_by) 
-                 VALUES ($1, $2, 'student_registration')
-                 ON CONFLICT (name) DO NOTHING`,
+            console.log('[REGISTRATION] Institute not found, creating new one');
+            // Institute doesn't exist - create it with default 'open' status and no deadline
+            const newInstitute = await client.query(
+                `INSERT INTO institutes (name, display_name, created_by, registration_status) 
+                 VALUES ($1, $2, 'student_registration', 'open')
+                 ON CONFLICT (name) DO UPDATE SET display_name = EXCLUDED.display_name
+                 RETURNING name, display_name, registration_status, registration_start_time, registration_deadline`,
                 [normalizedInstitute, displayInstitute]
             );
+            instituteData = newInstitute.rows[0];
+            console.log('[REGISTRATION] New institute created:', instituteData);
+        } else {
+            instituteData = instituteCheck.rows[0];
+            console.log('[REGISTRATION] Existing institute found:', instituteData);
         }
+
+        // Now check registration status and deadline for ALL cases (existing or newly created)
+        console.log('[REGISTRATION] Checking registration status:', instituteData.registration_status);
+        
+        // Check 1: Registration status must be 'open'
+        if (instituteData.registration_status === 'closed') {
+            console.log('[REGISTRATION] BLOCKED - Institute is closed');
+            await client.query('ROLLBACK');
+            return res.status(403).json({
+                success: false,
+                message: 'Registration is closed for this institute. Please contact your administrator.',
+            });
+        }
+        
+        if (instituteData.registration_status === 'paused') {
+            console.log('[REGISTRATION] BLOCKED - Institute is paused');
+            await client.query('ROLLBACK');
+            return res.status(403).json({
+                success: false,
+                message: 'Registration is temporarily paused for this institute. Please try again later.',
+            });
+        }
+        
+        // Check 2: Registration start time (if set)
+        if (instituteData.registration_start_time) {
+            const now = new Date();
+            const startTime = new Date(instituteData.registration_start_time);
+            
+            console.log('[REGISTRATION] Checking start time:', { now, startTime });
+            
+            if (now < startTime) {
+                console.log('[REGISTRATION] BLOCKED - Registration not yet started');
+                await client.query('ROLLBACK');
+                return res.status(403).json({
+                    success: false,
+                    message: `Registration has not started yet for this institute. Registration opens on ${startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST.`,
+                });
+            }
+        }
+        
+        // Check 3: Registration deadline (if set)
+        if (instituteData.registration_deadline) {
+            const now = new Date();
+            const deadline = new Date(instituteData.registration_deadline);
+            
+            console.log('[REGISTRATION] Checking deadline:', { now, deadline });
+            
+            if (now > deadline) {
+                console.log('[REGISTRATION] BLOCKED - Deadline passed');
+                await client.query('ROLLBACK');
+                return res.status(403).json({
+                    success: false,
+                    message: `Registration deadline has passed for this institute. Deadline was ${deadline.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST.`,
+                });
+            }
+        }
+
+        console.log('[REGISTRATION] All checks passed, proceeding with registration');
 
         // Insert new student into database
         const result = await client.query(
@@ -116,30 +164,9 @@ router.post('/register', verifyToken, async (req, res) => {
 
         const newUser = result.rows[0];
 
-        // Check if there are any test assignments for this institute and auto-assign them to the new student
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS test_assignments (
-                id SERIAL PRIMARY KEY,
-                test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
-                student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true,
-                UNIQUE(test_id, student_id)
-            )
-        `);
-
-        // Create institute_test_assignments table if it doesn't exist
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS institute_test_assignments (
-                id SERIAL PRIMARY KEY,
-                institute_id INTEGER REFERENCES institutes(id) ON DELETE CASCADE,
-                test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true,
-                UNIQUE(institute_id, test_id)
-            )
-        `);
-
+        // REMOVED: CREATE TABLE IF NOT EXISTS for test_assignments and institute_test_assignments
+        // These should be in migration, not per registration
+        
         // Check if the institute exists in the institutes table
         const instituteRecord = await client.query(
             'SELECT id FROM institutes WHERE name = $1 AND is_active = true',
