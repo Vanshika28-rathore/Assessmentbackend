@@ -486,12 +486,24 @@ const createTables = async () => {
                 test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
                 title VARCHAR(500) NOT NULL,
                 description TEXT NOT NULL,
+                marks INTEGER DEFAULT 10,
                 time_limit DECIMAL(5,2) DEFAULT 2.0,
                 memory_limit INTEGER DEFAULT 256,
                 question_order INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        `);
+
+        // Add marks column if it doesn't exist (for existing databases)
+        await client.query(`
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='coding_questions' AND column_name='marks') THEN
+                    ALTER TABLE coding_questions ADD COLUMN marks INTEGER DEFAULT 10;
+                END IF;
+            END $$;
         `);
 
         // Create index for coding_questions
@@ -529,9 +541,21 @@ const createTables = async () => {
                 status VARCHAR(50) DEFAULT 'pending',
                 test_cases_passed INTEGER DEFAULT 0,
                 total_test_cases INTEGER DEFAULT 0,
+                marks_earned DECIMAL(5,2) DEFAULT 0,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(student_id, coding_question_id, test_id)
             );
+        `);
+
+        // Add marks_earned column if it doesn't exist (for existing databases)
+        await client.query(`
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='student_coding_submissions' AND column_name='marks_earned') THEN
+                    ALTER TABLE student_coding_submissions ADD COLUMN marks_earned DECIMAL(5,2) DEFAULT 0;
+                END IF;
+            END $$;
         `);
 
         // Create indices for student_coding_submissions

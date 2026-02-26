@@ -239,57 +239,54 @@ router.get('/:id', verifyAdmin, async (req, res) => {
             }
         }
 
-        // CODE EXECUTION & CODING PROBLEMS - TEMPORARILY DISABLED
         // Fetch coding questions for this test
-        // let codingQuestions = [];
-        // try {
-        //     const codingQuestionsResult = await pool.query(`
-        //         SELECT * FROM coding_questions 
-        //         WHERE test_id = $1 
-        //         ORDER BY question_order ASC, id ASC
-        //     `, [id]);
+        let codingQuestions = [];
+        try {
+            const codingQuestionsResult = await pool.query(`
+                SELECT * FROM coding_questions 
+                WHERE test_id = $1 
+                ORDER BY question_order ASC, id ASC
+            `, [id]);
 
-        //     // Get test cases for each coding question
-        //     codingQuestions = await Promise.all(
-        //         codingQuestionsResult.rows.map(async (question) => {
-        //             const testCasesResult = await pool.query(`
-        //                 SELECT * FROM coding_test_cases 
-        //                 WHERE coding_question_id = $1 
-        //                 ORDER BY test_case_order ASC, id ASC
-        //             `, [question.id]);
+            // Get test cases for each coding question
+            codingQuestions = await Promise.all(
+                codingQuestionsResult.rows.map(async (question) => {
+                    const testCasesResult = await pool.query(`
+                        SELECT * FROM coding_test_cases 
+                        WHERE coding_question_id = $1 
+                        ORDER BY test_case_order ASC, id ASC
+                    `, [question.id]);
 
-        //             const publicTestCases = testCasesResult.rows
-        //                 .filter(tc => !tc.is_hidden)
-        //                 .map(tc => ({
-        //                     input: tc.input,
-        //                     output: tc.output,
-        //                     explanation: tc.explanation
-        //                 }));
+                    const publicTestCases = testCasesResult.rows
+                        .filter(tc => !tc.is_hidden)
+                        .map(tc => ({
+                            input: tc.input,
+                            output: tc.output,
+                            explanation: tc.explanation
+                        }));
 
-        //             const hiddenTestCases = testCasesResult.rows
-        //                 .filter(tc => tc.is_hidden)
-        //                 .map(tc => ({
-        //                     input: tc.input,
-        //                     output: tc.output
-        //                 }));
+                    const hiddenTestCases = testCasesResult.rows
+                        .filter(tc => tc.is_hidden)
+                        .map(tc => ({
+                            input: tc.input,
+                            output: tc.output
+                        }));
 
-        //             return {
-        //                 id: question.id,
-        //                 title: question.title,
-        //                 description: question.description,
-        //                 timeLimit: parseFloat(question.time_limit),
-        //                 memoryLimit: question.memory_limit,
-        //                 publicTestCases,
-        //                 hiddenTestCases
-        //             };
-        //         })
-        //     );
-        // } catch (error) {
-        //     console.error('Error fetching coding questions:', error);
-        //     // Continue without coding questions if table doesn't exist
-        // }
-
-        const codingQuestions = []; // Empty array when coding questions disabled
+                    return {
+                        id: question.id,
+                        title: question.title,
+                        description: question.description,
+                        timeLimit: parseFloat(question.time_limit),
+                        memoryLimit: question.memory_limit,
+                        publicTestCases,
+                        hiddenTestCases
+                    };
+                })
+            );
+        } catch (error) {
+            console.error('Error fetching coding questions:', error);
+            // Continue without coding questions if table doesn't exist
+        }
 
         res.json({
             success: true,

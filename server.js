@@ -23,7 +23,6 @@ const institutesRoutes = require('./routes/institutes');
 const proctoringRoutes = require('./routes/proctoring');
 const feedbackRoutes = require('./routes/feedback');
 const settingsRoutes = require('./routes/settings');
-// CODE EXECUTION & CODING PROBLEMS - TEMPORARILY DISABLED
 // const codeExecutionRoutes = require('./routes/codeExecution.routes');
 // const codingQuestionsRoutes = require('./routes/codingQuestions.routes');
 
@@ -128,7 +127,6 @@ app.use('/api/institutes', institutesRoutes);
 app.use('/api/proctoring', proctoringRoutes);
 app.use('/api/feedback', checkMaintenance, feedbackRoutes);
 app.use('/api/settings', settingsRoutes);
-// CODE EXECUTION & CODING PROBLEMS - TEMPORARILY DISABLED
 // app.use('/api/code', codeExecutionRoutes);
 // app.use('/api/coding-questions', codingQuestionsRoutes);
 
@@ -333,9 +331,12 @@ io.on('connection', (socket) => {
     socket.on('student:join-proctoring', (data) => {
         const { studentId, studentName, testId, testTitle } = data;
         
-        activeSessions.set(studentId, {
+        // Store with string key for consistent lookup
+        const studentIdStr = String(studentId);
+        
+        activeSessions.set(studentIdStr, {
             socketId: socket.id,
-            studentId,
+            studentId: studentIdStr,
             studentName,
             testId,
             testTitle,
@@ -343,22 +344,22 @@ io.on('connection', (socket) => {
             isMonitored: false,
         });
 
-        socket.join(`student-${studentId}`);
-        socket.studentId = studentId;
+        socket.join(`student-${studentIdStr}`);
+        socket.studentId = studentIdStr;
 
-        logger.info({ studentId, studentName, testId, testTitle }, 'Student joined proctoring');
+        logger.info({ studentId: studentIdStr, studentName, testId, testTitle }, 'Student joined proctoring');
 
         // Reselect monitored students when new student joins
         selectStudentsForMonitoring();
 
         // Notify all admins about new student
         io.to('admin-room').emit('student:joined', {
-            studentId,
+            studentId: studentIdStr,
             studentName,
             testId,
             testTitle,
             startTime: new Date(),
-            isMonitored: monitoredStudents.has(studentId),
+            isMonitored: monitoredStudents.has(studentIdStr),
         });
     });
 
@@ -452,6 +453,151 @@ io.on('connection', (socket) => {
             logger.error({ error, studentId, testId }, 'Error storing AI violation');
         }
     });
+
+    // ============================================
+    // PROCTORING MESSAGING EVENTS
+    // ============================================
+
+    // Admin sends message to student
+    socket.on('admin:send-message', async (data) => {
+        const { studentId, message, messageType = 'warning', priority = 'medium', adminId = 'admin', testId } = data;
+
+        logger.info({ studentId, messageType, priority, adminId }, 'Received admin:send-message event');
+
+        // Validate required fields
+        if (!studentId || !message) {
+            logger.warn({ studentId }, 'admin:send-message - Missing required fields');
+            socket.emit('admin:message-failed', { studentId, error: 'Missing required fields: studentId, message' });
+            return;
+        }
+
+        // Find active student session - ensure string comparison
+        const studentIdStr = String(studentId);
+        const studentSession = activeSessions.get(studentIdStr);
+
+        logger.info({ 
+            studentIdStr, 
+            hasSession: !!studentSession,
+            activeSessions: Array.from(activeSessions.keys())
+        }, 'Checking student session');
+
+        if (!studentSession) {
+            logger.warn({ studentId: studentIdStr, adminId }, 'Attempted to send message to inactive student');
+            socket.emit('admin:message-failed', { studentId: studentIdStr, error: 'Student not in active session' });
+            return;
+        }
+
+        try {
+            // Create message data
+            const messageData = {
+                id: Date.now(),
+                adminId,
+                studentId,
+                testId: testId || studentSession.testId,
+                message,
+                messageType,
+                priority,
+                sessionId: `${studentId}-${studentSession.testId}-${Date.now()}`,
+                timestamp: new Date()
+            };
+
+            // Store message in database
+            await pool.query(
+                `INSERT INTO proctoring_messages 
+                (admin_id, student_id, test_id, message, message_type, priority, session_id, message_timestamp) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id`,
+                [adminId, studentId, messageData.testId, message, messageType, priority, messageData.sessionId, messageData.timestamp]
+            );
+
+            // Send message to specific student using their session socket ID
+            io.to(studentSession.socketId).emit('proctoring:message-received', messageData);
+
+            // Confirm delivery to admin
+            socket.emit('admin:message-delivered', { 
+                ...messageData, 
+                success: true,
+                studentName: studentSession.studentName
+            });
+
+            logger.info({ 
+                adminId, 
+                studentId, 
+                studentName: studentSession.studentName,
+                messageType, 
+                priority,
+                messagePreview: message.substring(0, 50) + '...'
+            }, 'Message sent to student');
+
+        } catch (error) {
+            logger.error({ error, studentId, adminId }, 'Error sending message to student');
+            socket.emit('admin:message-failed', { studentId, error: 'Failed to send message - database error' });
+        }
+    });
+
+    // Student acknowledges message receipt
+    socket.on('student:message-read', async (data) => {
+        const { messageId, studentId } = data;
+
+        if (!messageId || !studentId) {
+            return;
+        }
+
+        try {
+            // Update read status in database
+            await pool.query(
+                `UPDATE proctoring_messages 
+                SET read_status = TRUE, read_at = CURRENT_TIMESTAMP 
+                WHERE id = $1 AND student_id = $2`,
+                [messageId, studentId]
+            );
+
+            // Notify all admins that message was read
+            io.to('admin-room').emit('student:message-read', {
+                messageId,
+                studentId,
+                readAt: new Date()
+            });
+
+            logger.info({ messageId, studentId }, 'Student acknowledged message receipt');
+        } catch (error) {
+            logger.error({ error, messageId, studentId }, 'Error updating message read status');
+        }
+    });
+
+    // Admin requests message history for a student
+    socket.on('admin:get-message-history', async (data) => {
+        const { studentId, testId } = data;
+
+        if (!socket.isAdmin) {
+            socket.emit('admin:message-history-error', { error: 'Unauthorized' });
+            return;
+        }
+
+        try {
+            const result = await pool.query(
+                `SELECT id, admin_id, message, message_type, priority, message_timestamp, read_status, read_at
+                FROM proctoring_messages 
+                WHERE student_id = $1 AND ($2::VARCHAR IS NULL OR test_id = $2)
+                ORDER BY message_timestamp DESC 
+                LIMIT 50`,
+                [studentId, testId || null]
+            );
+
+            socket.emit('admin:message-history', {
+                studentId,
+                testId,
+                messages: result.rows
+            });
+        } catch (error) {
+            logger.error({ error, studentId, testId }, 'Error fetching message history');
+            socket.emit('admin:message-history-error', { error: 'Failed to fetch message history' });
+        }
+    });
+
+    // ============================================
+    // END PROCTORING MESSAGING EVENTS
+    // ============================================
 
     // Student leaves proctoring
     socket.on('student:leave-proctoring', (data) => {
