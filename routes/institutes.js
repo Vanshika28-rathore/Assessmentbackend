@@ -153,19 +153,18 @@ router.get('/', verifyAdmin, async (req, res) => {
                     ELSE false
                 END as is_registration_open,
                 COUNT(DISTINCT s.id) as student_count,
-                COALESCE(
-                    (
-                        SELECT COUNT(DISTINCT ita.test_id)
+                (
+                    SELECT COUNT(DISTINCT test_id) 
+                    FROM (
+                        SELECT ita.test_id
                         FROM institute_test_assignments ita
                         WHERE ita.institute_id = i.id
-                    ), 0
-                ) + COALESCE(
-                    (
-                        SELECT COUNT(DISTINCT ta.test_id)
+                        UNION
+                        SELECT ta.test_id
                         FROM test_assignments ta
                         JOIN students st ON ta.student_id = st.id
                         WHERE LOWER(st.institute) = i.name
-                    ), 0
+                    ) combined_tests
                 ) as assigned_tests_count
             FROM institutes i
             LEFT JOIN students s ON LOWER(s.institute) = i.name

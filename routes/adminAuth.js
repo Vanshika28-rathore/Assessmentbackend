@@ -149,4 +149,137 @@ router.get('/me', verifyAdmin, (req, res) => {
     });
 });
 
+/**
+ * PUT /api/admin/profile
+ * Update admin profile information
+ */
+router.put('/profile', verifyAdmin, async (req, res) => {
+    try {
+        const { email, full_name, phone, address } = req.body;
+        const adminId = req.admin.id;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email is required',
+            });
+        }
+
+        // Check if email is already taken by another admin
+        const emailCheck = await query(
+            'SELECT id FROM admins WHERE email = $1 AND id != $2',
+            [email, adminId]
+        );
+
+        if (emailCheck.rows.length > 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'Email is already taken by another admin',
+            });
+        }
+
+        // Update admin profile
+        const result = await query(
+            'UPDATE admins SET email = $1, full_name = $2, phone = $3, address = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5 RETURNING id, email, full_name, phone, address, updated_at',
+            [email, full_name || null, phone || null, address || null, adminId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Admin not found',
+            });
+        }
+
+        console.log('[ADMIN PROFILE UPDATE] Success:', { adminId, email });
+
+        return res.json({
+            success: true,
+            message: 'Profile updated successfully',
+            admin: result.rows[0],
+        });
+
+    } catch (error) {
+        console.error('[ADMIN PROFILE UPDATE] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: error.message,
+        });
+    }
+});
+
+/**
+ * PUT /api/admin/change-password
+ * Change admin password
+ */
+router.put('/change-password', verifyAdmin, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const adminId = req.admin.id;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Current password and new password are required',
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: 'New password must be at least 6 characters long',
+            });
+        }
+
+        // Get current admin data
+        const adminResult = await query(
+            'SELECT password_hash FROM admins WHERE id = $1',
+            [adminId]
+        );
+
+        if (adminResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Admin not found',
+            });
+        }
+
+        const admin = adminResult.rows[0];
+
+        // Verify current password
+        const isCurrentPasswordValid = await bcrypt.compare(currentPassword, admin.password_hash);
+        if (!isCurrentPasswordValid) {
+            return res.status(401).json({
+                success: false,
+                message: 'Current password is incorrect',
+            });
+        }
+
+        // Hash new password
+        const salt = await bcrypt.genSalt(10);
+        const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
+        // Update password
+        await query(
+            'UPDATE admins SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [newPasswordHash, adminId]
+        );
+
+        console.log('[ADMIN PASSWORD CHANGE] Success:', { adminId });
+
+        return res.json({
+            success: true,
+            message: 'Password changed successfully',
+        });
+
+    } catch (error) {
+        console.error('[ADMIN PASSWORD CHANGE] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+        });
+    }
+});
+
 module.exports = router;
