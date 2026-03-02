@@ -2,130 +2,131 @@ const express = require('express');
 const router = express.Router();
 const { query, pool } = require('../config/db');
 const verifyToken = require('../middleware/verifyToken');
-const otpService = require('../services/otpService');
-const emailService = require('../services/emailService');
+// COMMENTED OUT - OTP and Email Service imports
+// const otpService = require('../services/otpService');
+// const emailService = require('../services/emailService');
 
 /**
- * POST /api/send-otp
+ * COMMENTED OUT - POST /api/send-otp
  * Send OTP to email for verification
  */
-router.post('/send-otp', async (req, res) => {
-    try {
-        const { email, fullName } = req.body;
+// router.post('/send-otp', async (req, res) => {
+//     try {
+//         const { email, fullName } = req.body;
 
-        console.log('[SEND OTP] Request received:', { email, fullName });
+//         console.log('[SEND OTP] Request received:', { email, fullName });
 
-        if (!email || !fullName) {
-            return res.status(400).json({
-                success: false,
-                message: 'Email and full name are required',
-            });
-        }
+//         if (!email || !fullName) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: 'Email and full name are required',
+//             });
+//         }
 
-        // Validate email format
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid email format',
-            });
-        }
+//         // Validate email format
+//         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+//         if (!emailRegex.test(email)) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: 'Invalid email format',
+//             });
+//         }
 
-        // Check if email is already registered
-        const existingUser = await query(
-            'SELECT id FROM students WHERE email = $1',
-            [email.toLowerCase().trim()]
-        );
+//         // Check if email is already registered
+//         const existingUser = await query(
+//             'SELECT id FROM students WHERE email = $1',
+//             [email.toLowerCase().trim()]
+//         );
 
-        if (existingUser.rows.length > 0) {
-            return res.status(409).json({
-                success: false,
-                message: 'This email is already registered. Please login instead.',
-            });
-        }
+//         if (existingUser.rows.length > 0) {
+//             return res.status(409).json({
+//                 success: false,
+//                 message: 'This email is already registered. Please login instead.',
+//             });
+//         }
 
-        // Generate OTP
-        const otp = otpService.generateOTP();
-        console.log('[SEND OTP] Generated OTP:', otp);
+//         // Generate OTP
+//         const otp = otpService.generateOTP();
+//         console.log('[SEND OTP] Generated OTP:', otp);
 
-        // Store OTP in database
-        const storeResult = await otpService.storeOTP(email, otp);
-        if (!storeResult.success) {
-            return res.status(429).json({
-                success: false,
-                message: storeResult.message,
-            });
-        }
+//         // Store OTP in database
+//         const storeResult = await otpService.storeOTP(email, otp);
+//         if (!storeResult.success) {
+//             return res.status(429).json({
+//                 success: false,
+//                 message: storeResult.message,
+//             });
+//         }
 
-        // Send OTP email
-        const emailResult = await emailService.sendOTPEmail(email, otp, fullName);
-        if (!emailResult.success) {
-            return res.status(500).json({
-                success: false,
-                message: 'Failed to send OTP email. Please try again.',
-            });
-        }
+//         // Send OTP email
+//         const emailResult = await emailService.sendOTPEmail(email, otp, fullName);
+//         if (!emailResult.success) {
+//             return res.status(500).json({
+//                 success: false,
+//                 message: 'Failed to send OTP email. Please try again.',
+//             });
+//         }
 
-        console.log('[SEND OTP] Success:', { email });
+//         console.log('[SEND OTP] Success:', { email });
 
-        return res.json({
-            success: true,
-            message: 'OTP sent to your email address',
-        });
+//         return res.json({
+//             success: true,
+//             message: 'OTP sent to your email address',
+//         });
 
-    } catch (error) {
-        console.error('[SEND OTP] Error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message,
-        });
-    }
-});
+//     } catch (error) {
+//         console.error('[SEND OTP] Error:', error);
+//         return res.status(500).json({
+//             success: false,
+//             message: 'Internal server error',
+//             error: error.message,
+//         });
+//     }
+// });
 
 /**
- * POST /api/verify-otp
+ * COMMENTED OUT - POST /api/verify-otp
  * Verify OTP before registration
  */
-router.post('/verify-otp', async (req, res) => {
-    try {
-        const { email, otp } = req.body;
+// router.post('/verify-otp', async (req, res) => {
+//     try {
+//         const { email, otp } = req.body;
 
-        console.log('[VERIFY OTP] Request received:', { email, otp: otp ? '******' : 'missing' });
+//         console.log('[VERIFY OTP] Request received:', { email, otp: otp ? '******' : 'missing' });
 
-        if (!email || !otp) {
-            return res.status(400).json({
-                success: false,
-                message: 'Email and OTP are required',
-            });
-        }
+//         if (!email || !otp) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: 'Email and OTP are required',
+//             });
+//         }
 
-        // Verify OTP
-        const verifyResult = await otpService.verifyOTP(email, otp);
+//         // Verify OTP
+//         const verifyResult = await otpService.verifyOTP(email, otp);
         
-        if (!verifyResult.success) {
-            return res.status(400).json({
-                success: false,
-                message: verifyResult.message,
-            });
-        }
+//         if (!verifyResult.success) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: verifyResult.message,
+//             });
+//         }
 
-        console.log('[VERIFY OTP] Success:', { email });
+//         console.log('[VERIFY OTP] Success:', { email });
 
-        return res.json({
-            success: true,
-            message: 'OTP verified successfully',
-        });
+//         return res.json({
+//             success: true,
+//             message: 'OTP verified successfully',
+//         });
 
-    } catch (error) {
-        console.error('[VERIFY OTP] Error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message,
-        });
-    }
-});
+//     } catch (error) {
+//         console.error('[VERIFY OTP] Error:', error);
+//         return res.status(500).json({
+//             success: false,
+//             message: 'Internal server error',
+//             error: error.message,
+//         });
+//     }
+// });
 
 /**
  * POST /api/register
