@@ -509,37 +509,93 @@ router.post('/save-progress', verifyToken, async (req, res) => {
 /**
  * POST /api/student/submit-exam
  * Submit exam answers, calculate results, and store in database
+ * 
+ * CRITICAL FIX: If student has exam progress (already started exam), 
+ * skip token validation to prevent "login again" errors during long exams
  */
-router.post('/submit-exam', verifyToken, async (req, res) => {
-    const { testId, answers, examId, submissionReason, warningCount, timeRemaining } = req.body;
-    const firebaseUid = req.firebaseUid; // From verifyToken middleware
+router.post('/submit-exam', async (req, res) => {
+    const { testId, answers, examId, submissionReason, warningCount, timeRemaining, studentId: clientStudentId } = req.body;
 
     console.log('=== SUBMIT EXAM REQUEST ===');
-    console.log('Firebase UID:', firebaseUid);
     console.log('Test ID:', testId);
-    console.log('Exam ID:', examId);
+    console.log('Client Student ID:', clientStudentId);
     console.log('Submission Reason:', submissionReason);
     console.log('Warning Count:', warningCount);
     console.log('Time Remaining:', timeRemaining);
-    console.log('Answers:', answers);
-    console.log('Answers type:', typeof answers);
-    console.log('Answers keys:', Object.keys(answers || {}));
 
     try {
-        // 1. Get student ID from database using Firebase UID
-        const studentResult = await pool.query(
-            'SELECT id FROM students WHERE firebase_uid = $1',
-            [firebaseUid]
-        );
+        let studentId;
+        let firebaseUid;
 
-        if (studentResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Student not found'
-            });
+        // CRITICAL FIX: Check if student has exam progress (already started exam)
+        // If yes, skip token validation to prevent expiry issues
+        if (clientStudentId && testId) {
+            const progressCheck = await pool.query(`
+                SELECT ep.student_id, s.firebase_uid
+                FROM exam_progress ep
+                JOIN students s ON s.id = ep.student_id
+                WHERE ep.student_id = $1 AND ep.test_id = $2
+            `, [clientStudentId, testId]);
+
+            if (progressCheck.rows.length > 0) {
+                // Student has progress - skip token validation
+                studentId = progressCheck.rows[0].student_id;
+                firebaseUid = progressCheck.rows[0].firebase_uid;
+                console.log('✅ Student has exam progress - skipping token validation');
+                console.log('Student ID:', studentId);
+            }
         }
 
-        const studentId = studentResult.rows[0].id;
+        // If no progress found, validate token normally
+        if (!studentId) {
+            const authHeader = req.headers.authorization;
+            
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized: No token provided',
+                });
+            }
+
+            const token = authHeader.split('Bearer ')[1];
+            
+            if (!token) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized: Invalid token format',
+                });
+            }
+
+            try {
+                const admin = require('../config/firebase');
+                const decodedToken = await admin.auth().verifyIdToken(token);
+                firebaseUid = decodedToken.uid;
+                
+                // Get student ID from Firebase UID
+                const studentResult = await pool.query(
+                    'SELECT id FROM students WHERE firebase_uid = $1',
+                    [firebaseUid]
+                );
+
+                if (studentResult.rows.length === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: 'Student not found'
+                    });
+                }
+
+                studentId = studentResult.rows[0].id;
+                console.log('✅ Token validated - Student ID:', studentId);
+            } catch (tokenError) {
+                console.error('Token verification error:', tokenError);
+                return res.status(401).json({
+                    success: false,
+                    message: 'Token expired or invalid. Please try again.',
+                    code: 'TOKEN_EXPIRED'
+                });
+            }
+        }
+
         console.log('Student ID from DB:', studentId);
 
         // 2. Validate input
