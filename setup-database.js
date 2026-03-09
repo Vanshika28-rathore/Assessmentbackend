@@ -14,7 +14,7 @@
  * - institutes: Institute/university management with registration control
  * - tests: Test templates with scheduling, duration, passing criteria, and audit fields
  * - test_job_roles: Multiple job roles per test with descriptions
- * - questions: MCQ questions with 4 options and correct answers
+ * - questions: MCQ questions with 4 options, correct answers, and format support (paragraph/line/code)
  * - exams: Exam instances (legacy support)
  * - results: Exam results tracking
  * 
@@ -27,13 +27,20 @@
  * - test_feedback: Student feedback on tests with ratings, difficulty, and comments
  * 
  * Coding Features:
- * - coding_questions: Coding problems with time/memory limits
+ * - coding_questions: Coding problems with time/memory limits and marks
  * - coding_test_cases: Test cases for coding questions (public and hidden)
- * - student_coding_submissions: Student code submissions with execution results
+ * - student_coding_submissions: Student code submissions with execution results and marks
  * 
  * Proctoring Features:
  * - proctoring_sessions: Live proctoring session tracking
  * - proctoring_violations: AI-detected cheating violations
+ * - proctoring_messages: Messages sent to students during proctoring
+ * 
+ * Interview Features:
+ * - interviews: Interview scheduling and management with status tracking
+ * 
+ * Authentication Features:
+ * - otps: OTP system for email verification and password reset
  * 
  * System Features:
  * - system_settings: System-wide settings (maintenance mode, retry timer)
@@ -148,6 +155,7 @@ const createTables = async () => {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_students_firebase_uid ON students(firebase_uid);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_students_roll_number ON students(roll_number);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_students_institute ON students(LOWER(institute));`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_students_created_at ON students(created_at);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_students_resume_link ON students(resume_link) WHERE resume_link IS NOT NULL;`);
 
@@ -160,8 +168,30 @@ const createTables = async () => {
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 full_name VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                phone VARCHAR(20),
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        `);
+
+        // Add missing columns if they don't exist (for existing databases)
+        await client.query(`
+            DO $ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='admins' AND column_name='phone') THEN
+                    ALTER TABLE admins ADD COLUMN phone VARCHAR(20);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='admins' AND column_name='address') THEN
+                    ALTER TABLE admins ADD COLUMN address TEXT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='admins' AND column_name='updated_at') THEN
+                    ALTER TABLE admins ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+            END $;
         `);
 
         // 3. Create Tests Table
@@ -226,8 +256,31 @@ const createTables = async () => {
                 option_d TEXT,
                 correct_option VARCHAR(1) NOT NULL,
                 marks INTEGER DEFAULT 1,
+                format VARCHAR(20) DEFAULT 'paragraph',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        `);
+
+        // Add format column if it doesn't exist (for existing databases)
+        await client.query(`
+            DO $ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='questions' AND column_name='format') THEN
+                    ALTER TABLE questions ADD COLUMN format VARCHAR(20) DEFAULT 'paragraph';
+                END IF;
+            END $;
+        `);
+
+        // Add check constraint for format values
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'questions_format_check') THEN
+                    ALTER TABLE questions ADD CONSTRAINT questions_format_check 
+                    CHECK (format IN ('paragraph', 'line', 'code'));
+                END IF;
+            END $;
         `);
 
         // Create index on test_id for faster lookups
@@ -421,6 +474,151 @@ const createTables = async () => {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_violations_type ON proctoring_violations(violation_type);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_violations_composite ON proctoring_violations(student_id, test_id, violation_type);`);
 
+        // 13a. Create Proctoring Messages Table
+        console.log('Creating proctoring_messages table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS proctoring_messages (
+                id SERIAL PRIMARY KEY,
+                admin_id VARCHAR(255) NOT NULL,
+                student_id VARCHAR(255) NOT NULL,
+                test_id VARCHAR(255),
+                message TEXT NOT NULL,
+                message_type VARCHAR(50) DEFAULT 'warning',
+                priority VARCHAR(20) DEFAULT 'medium',
+                session_id VARCHAR(255),
+                message_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                read_status BOOLEAN DEFAULT FALSE,
+                read_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Add check constraints for message_type and priority
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'proctoring_messages_message_type_check') THEN
+                    ALTER TABLE proctoring_messages ADD CONSTRAINT proctoring_messages_message_type_check 
+                    CHECK (message_type IN ('warning', 'instruction', 'alert', 'info'));
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'proctoring_messages_priority_check') THEN
+                    ALTER TABLE proctoring_messages ADD CONSTRAINT proctoring_messages_priority_check 
+                    CHECK (priority IN ('low', 'medium', 'high'));
+                END IF;
+            END $;
+        `);
+
+        // Create indices for proctoring_messages
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_student_id ON proctoring_messages(student_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_admin_id ON proctoring_messages(admin_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_test_id ON proctoring_messages(test_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_session_id ON proctoring_messages(session_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_message_timestamp ON proctoring_messages(message_timestamp);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_proctoring_messages_read_status ON proctoring_messages(read_status);`);
+
+        // Create trigger function for proctoring_messages updated_at
+        await client.query(`
+            CREATE OR REPLACE FUNCTION update_proctoring_messages_timestamp()
+            RETURNS TRIGGER AS $
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $ LANGUAGE plpgsql;
+        `);
+
+        // Create trigger for proctoring_messages
+        await client.query(`DROP TRIGGER IF EXISTS update_proctoring_messages_timestamp_trigger ON proctoring_messages;`);
+        await client.query(`
+            CREATE TRIGGER update_proctoring_messages_timestamp_trigger
+            BEFORE UPDATE ON proctoring_messages
+            FOR EACH ROW
+            EXECUTE FUNCTION update_proctoring_messages_timestamp();
+        `);
+
+        // 13b. Create Interviews Table
+        console.log('Creating interviews table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS interviews (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+                test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+                scheduled_time TIMESTAMP NOT NULL,
+                duration INTEGER DEFAULT 60,
+                status VARCHAR(20) DEFAULT 'scheduled',
+                peer_id VARCHAR(255),
+                admin_notes TEXT,
+                technical_score INTEGER,
+                communication_score INTEGER,
+                recommendation VARCHAR(20) DEFAULT 'on_hold',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Add check constraints for status and recommendation
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'interviews_status_check') THEN
+                    ALTER TABLE interviews ADD CONSTRAINT interviews_status_check 
+                    CHECK (status IN ('scheduled', 'in_progress', 'completed', 'cancelled'));
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'interviews_recommendation_check') THEN
+                    ALTER TABLE interviews ADD CONSTRAINT interviews_recommendation_check 
+                    CHECK (recommendation IN ('selected', 'rejected', 'on_hold'));
+                END IF;
+            END $;
+        `);
+
+        // Create indices for interviews
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interviews_student_id ON interviews(student_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interviews_test_id ON interviews(test_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interviews_scheduled_time ON interviews(scheduled_time);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interviews_status ON interviews(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interviews_created_at ON interviews(created_at);`);
+
+        // Create trigger function for interviews updated_at
+        await client.query(`
+            CREATE OR REPLACE FUNCTION update_interviews_updated_at()
+            RETURNS TRIGGER AS $
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $ LANGUAGE plpgsql;
+        `);
+
+        // Create trigger for interviews
+        await client.query(`DROP TRIGGER IF EXISTS trigger_update_interviews_updated_at ON interviews;`);
+        await client.query(`
+            CREATE TRIGGER trigger_update_interviews_updated_at
+            BEFORE UPDATE ON interviews
+            FOR EACH ROW
+            EXECUTE FUNCTION update_interviews_updated_at();
+        `);
+
+        // 13c. Create OTPs Table
+        console.log('Creating otps table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS otps (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL,
+                otp_hash VARCHAR(255) NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                attempts INTEGER DEFAULT 0,
+                is_used BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Create indices for otps
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_otps_email ON otps(email);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_otps_expires_at ON otps(expires_at);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_otps_created_at ON otps(created_at);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_otps_is_used ON otps(is_used);`);
+
         // 14. Create Institute Test Assignments Table
         console.log('Creating institute_test_assignments table...');
         await client.query(`
@@ -605,8 +803,9 @@ const createTables = async () => {
             'students', 'admins', 'tests', 'test_job_roles', 'questions', 
             'exams', 'results', 'student_responses', 'test_attempts', 
             'test_assignments', 'exam_progress', 'proctoring_sessions', 
-            'proctoring_violations', 'institutes', 'institute_test_assignments',
-            'test_feedback', 'system_settings', 'coding_questions', 'coding_test_cases',
+            'proctoring_violations', 'proctoring_messages', 'interviews', 'otps',
+            'institutes', 'institute_test_assignments', 'test_feedback', 
+            'system_settings', 'coding_questions', 'coding_test_cases',
             'student_coding_submissions'
         ];
         
@@ -620,11 +819,14 @@ const createTables = async () => {
         console.log('   - Institutes table with registration control (deadline, status, start time)');
         console.log('   - Tests table with job roles, scheduling, passing percentage, and audit fields');
         console.log('   - Test job roles table for multiple job roles per test');
-        console.log('   - Questions and exam management');
+        console.log('   - Questions with format support (paragraph, line, code)');
+        console.log('   - Exam management and results tracking');
         console.log('   - Test assignments for student-test mapping');
         console.log('   - Institute test assignments for institute-test mapping');
         console.log('   - Progress tracking with auto-save functionality');
-        console.log('   - Proctoring sessions and violations tracking');
+        console.log('   - Proctoring sessions, violations, and messages');
+        console.log('   - Interviews scheduling and management');
+        console.log('   - OTP system for email verification');
         console.log('   - Feedback system for student test feedback (test_feedback table)');
         console.log('   - System settings for maintenance mode and retry timer');
         console.log('   - Coding questions with test cases and submissions');

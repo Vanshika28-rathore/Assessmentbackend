@@ -57,6 +57,7 @@ router.get('/all-results', verifyAdmin, async (req, res) => {
         student_name,
         roll_number,
         student_email,
+        student_id,
         test_id,
         duration,
         max_attempts,

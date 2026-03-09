@@ -23,8 +23,10 @@ const institutesRoutes = require('./routes/institutes');
 const proctoringRoutes = require('./routes/proctoring');
 const feedbackRoutes = require('./routes/feedback');
 const settingsRoutes = require('./routes/settings');
+// DISABLED: Coding questions and code execution features
 // const codeExecutionRoutes = require('./routes/codeExecution.routes');
 // const codingQuestionsRoutes = require('./routes/codingQuestions.routes');
+const interviewsRoutes = require('./routes/interviews.routes');
 
 // Import middleware
 const { authLimiter, apiLimiter, submissionLimiter, proctoringLimiter } = require('./middleware/rateLimiter');
@@ -46,27 +48,16 @@ const allowedSocketOrigins = [
 
 const io = new Server(server, {
     cors: {
-        origin: allowedSocketOrigins,
-        credentials: true,
-        methods: ["GET", "POST"]
+        origin: ['http://localhost:5173', 'http://localhost:5174'],
+        methods: ["GET", "POST"],
+        credentials: false
     },
-    // Connection timeout and reliability settings
-    pingTimeout: 60000, // 60 seconds
-    pingInterval: 25000, // 25 seconds
-    upgradeTimeout: 10000, // 10 seconds
-    allowUpgrades: false, // Disable upgrades - stick with polling
-    transports: ['polling'], // Polling only
-    // Connection limits and cleanup
-    maxHttpBufferSize: 1e6, // 1MB max buffer size
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    transports: ['websocket', 'polling'],
     allowEIO3: true,
-    // Compression settings
-    compression: false,
-    // Additional connection settings
-    connectTimeout: 45000,
-    serveClient: false,
-    allowRequest: (req, callback) => {
-        callback(null, true);
-    }
+    upgradeTimeout: 30000, // Allow 30 seconds for transport upgrade
+    maxHttpBufferSize: 1e8 // 100 MB
 });
 const PORT = process.env.PORT || 5000;
 
@@ -127,8 +118,10 @@ app.use('/api/institutes', institutesRoutes);
 app.use('/api/proctoring', proctoringRoutes);
 app.use('/api/feedback', checkMaintenance, feedbackRoutes);
 app.use('/api/settings', settingsRoutes);
+// DISABLED: Coding questions and code execution features
 // app.use('/api/code', codeExecutionRoutes);
 // app.use('/api/coding-questions', codingQuestionsRoutes);
+app.use('/api/interviews', interviewsRoutes);
 
 // Health monitoring routes
 app.use('/', healthRoutes);
@@ -284,7 +277,7 @@ io.on('connection', (socket) => {
 
     // Connection timeout handling
     const connectionTimeout = setTimeout(() => {
-        if (!socket.studentId && !socket.isAdmin) {
+        if (!socket.studentId && !socket.isAdmin && !socket.interviewRole && !socket.studentDashboardId) {
             logger.warn({ socketId: socket.id }, 'Socket connection timeout - no identification received');
             socket.emit('connection-timeout', { message: 'Connection timeout - please refresh and try again' });
             socket.disconnect(true);
@@ -622,6 +615,156 @@ io.on('connection', (socket) => {
                 selectStudentsForMonitoring();
             }
         }
+    });
+
+    // ============================================
+    // INTERVIEW SIGNALING HANDLERS
+    // ============================================
+    
+    // Student joins dashboard room for notifications
+    socket.on('student:join-dashboard', (data) => {
+        const { studentId } = data;
+        socket.join(`student-dashboard-${studentId}`);
+        socket.studentDashboardId = studentId;
+        logger.info({ studentId }, 'Student joined dashboard room for interview notifications');
+    });
+    
+    // Join interview room
+    socket.on('interview:join', (data) => {
+        const { interviewId, peerId, role } = data; // role: 'admin' or 'student'
+        
+        socket.join(`interview-${interviewId}`);
+        socket.interviewId = interviewId;
+        socket.interviewRole = role;
+        socket.peerId = peerId;
+        
+        logger.info({ interviewId, peerId, role }, 'User joined interview room');
+        
+        // Notify other participant
+        socket.to(`interview-${interviewId}`).emit('interview:peer-joined', {
+            peerId,
+            role
+        });
+    });
+    
+    // Signal peer ID to other participant
+    socket.on('interview:signal-peer', (data) => {
+        const { interviewId, peerId } = data;
+        
+        logger.info({ interviewId, peerId }, 'Signaling peer ID');
+        
+        // Broadcast to other participants in the interview room
+        socket.to(`interview-${interviewId}`).emit('interview:peer-available', {
+            peerId,
+            role: socket.interviewRole
+        });
+    });
+    
+    // Admin starts call - notify student on dashboard AND in interview room
+    socket.on('interview:start-call', async (data) => {
+        const { interviewId, studentId } = data;
+        
+        logger.info({ interviewId, studentId }, 'Admin starting call');
+        
+        try {
+            // Get interview details for notification
+            const result = await pool.query(
+                `SELECT i.id, i.student_id, t.title as test_title, s.institute as institute_name
+                 FROM interviews i
+                 JOIN tests t ON i.test_id = t.id
+                 JOIN students s ON i.student_id = s.id
+                 WHERE i.id = $1`,
+                [interviewId]
+            );
+            
+            if (result.rows.length > 0) {
+                const interview = result.rows[0];
+                
+                // Update interview status to in_progress
+                await pool.query(
+                    `UPDATE interviews SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                    [interviewId]
+                );
+                
+                // Notify student in interview room
+                socket.to(`interview-${interviewId}`).emit('interview:call-started', {
+                    interviewId,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Notify student on dashboard (if they're on dashboard page)
+                io.to(`student-dashboard-${interview.student_id}`).emit('interview:incoming-call', {
+                    interviewId: interview.id,
+                    testTitle: interview.test_title,
+                    instituteName: interview.institute_name
+                });
+                
+                logger.info({ 
+                    interviewId, 
+                    studentId: interview.student_id,
+                    testTitle: interview.test_title 
+                }, 'Call notification sent to student');
+            }
+        } catch (error) {
+            logger.error({ error, interviewId, studentId }, 'Error sending call notification');
+        }
+    });
+    
+    // Student is ready to receive call - notify admin to initiate PeerJS call
+    socket.on('interview:student-ready', (data) => {
+        const { interviewId, peerId } = data;
+        
+        logger.info({ interviewId, peerId }, 'Student ready to receive call');
+        
+        // Notify admin in the interview room
+        socket.to(`interview-${interviewId}`).emit('interview:student-ready', {
+            peerId,
+            timestamp: new Date().toISOString()
+        });
+    });
+    
+    // Chat message in interview room
+    socket.on('interview:send-chat', (data) => {
+        const { interviewId, sender, senderName, text, timestamp } = data;
+        
+        logger.info({ 
+            interviewId, 
+            sender, 
+            senderName, 
+            text: text.substring(0, 50),
+            socketId: socket.id,
+            room: `interview-${interviewId}`
+        }, 'Chat message received, broadcasting to room');
+        
+        // Broadcast to other participant in the interview room
+        const sent = socket.to(`interview-${interviewId}`).emit('interview:chat-message', {
+            sender,
+            senderName,
+            text,
+            timestamp
+        });
+        
+        // Confirm to sender
+        socket.emit('interview:chat-sent', {
+            success: true,
+            timestamp
+        });
+        
+        logger.info({ interviewId, sent }, 'Chat message broadcasted');
+    });
+    
+    // Leave interview room
+    socket.on('interview:leave', (data) => {
+        const { interviewId } = data;
+        
+        logger.info({ interviewId, role: socket.interviewRole }, 'User left interview room');
+        
+        // Notify other participant
+        socket.to(`interview-${interviewId}`).emit('interview:peer-left', {
+            role: socket.interviewRole
+        });
+        
+        socket.leave(`interview-${interviewId}`);
     });
 
     // Keepalive ping

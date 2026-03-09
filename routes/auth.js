@@ -1,7 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { query, pool } = require('../config/db');
-const verifyToken = require('../middleware/verifyToken');
+const verifyToken = require('../middleware/verifyToken'); // Only for login/register
+const { verifySession } = require('../middleware/verifySession'); // For protected routes
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
 // COMMENTED OUT - OTP and Email Service imports
 // const otpService = require('../services/otpService');
 // const emailService = require('../services/emailService');
@@ -404,30 +409,87 @@ router.post('/register', verifyToken, async (req, res) => {
 
 /**
  * POST /api/login
- * Verify Firebase token and return student profile from PostgreSQL
+ * Verify Firebase token and return user profile (student or admin) with JWT session token
  * Frontend should authenticate with Firebase first, then call this endpoint
  */
 router.post('/login', verifyToken, async (req, res) => {
     try {
         const firebase_uid = req.firebaseUid; // From verifyToken middleware
+        const email = req.firebaseEmail; // From verifyToken middleware
 
-        const result = await query(
+        console.log('[LOGIN] Attempting login for:', { firebase_uid, email });
+
+        // Check if user is an admin (by email)
+        const adminResult = await query(
+            'SELECT id, email, full_name, created_at FROM admins WHERE email = $1',
+            [email]
+        );
+
+        if (adminResult.rows.length > 0) {
+            const admin = adminResult.rows[0];
+            console.log('[LOGIN] Admin found:', { id: admin.id, email: admin.email });
+
+            // Generate JWT session token for admin (valid for 24 hours)
+            const sessionToken = jwt.sign(
+                { 
+                    id: admin.id,
+                    email: admin.email, 
+                    role: 'admin',
+                    type: 'session'
+                },
+                JWT_SECRET,
+                { expiresIn: '24h' }
+            );
+
+            return res.status(200).json({
+                success: true,
+                message: 'Admin login successful',
+                token: sessionToken,
+                role: 'admin',
+                user: {
+                    id: admin.id,
+                    email: admin.email,
+                    full_name: admin.full_name,
+                    created_at: admin.created_at,
+                },
+            });
+        }
+
+        // Check if user is a student
+        const studentResult = await query(
             'SELECT id, firebase_uid, full_name, email, roll_number, institute, phone, address, course, specialization, created_at FROM students WHERE firebase_uid = $1',
             [firebase_uid]
         );
 
-        if (result.rows.length === 0) {
+        if (studentResult.rows.length === 0) {
+            console.log('[LOGIN] User not found in students or admins');
             return res.status(404).json({
                 success: false,
-                message: 'Student profile not found. Please register first.',
+                message: 'User profile not found. Please register first.',
             });
         }
 
-        const student = result.rows[0];
+        const student = studentResult.rows[0];
+        console.log('[LOGIN] Student found:', { id: student.id, email: student.email });
+
+        // Generate JWT session token for student (valid for 7 days)
+        const sessionToken = jwt.sign(
+            { 
+                id: student.id, 
+                firebase_uid: student.firebase_uid,
+                email: student.email, 
+                role: 'student',
+                type: 'session'
+            },
+            JWT_SECRET,
+            { expiresIn: '7d' }
+        );
 
         return res.status(200).json({
             success: true,
-            message: 'Login successful',
+            message: 'Student login successful',
+            token: sessionToken,
+            role: 'student',
             user: {
                 id: student.id,
                 firebase_uid: student.firebase_uid,
@@ -443,7 +505,7 @@ router.post('/login', verifyToken, async (req, res) => {
             },
         });
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('[LOGIN] Error:', error);
 
         return res.status(500).json({
             success: false,
@@ -457,7 +519,7 @@ router.post('/login', verifyToken, async (req, res) => {
  * GET /api/profile
  * Get current user's profile (protected route example)
  */
-router.get('/profile', verifyToken, async (req, res) => {
+router.get('/profile', verifySession, async (req, res) => {
     try {
         const firebase_uid = req.firebaseUid;
 

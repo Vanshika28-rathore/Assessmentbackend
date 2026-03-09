@@ -32,6 +32,7 @@ const verifyToken = async (req, res, next) => {
         // Attach decoded token to request object for use in route handlers
         req.user = decodedToken;
         req.firebaseUid = decodedToken.uid;
+        req.firebaseEmail = decodedToken.email; // Extract email for admin check
 
         next();
     } catch (error) {

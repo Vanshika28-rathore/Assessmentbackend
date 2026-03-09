@@ -59,9 +59,9 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        // 3. Generate JWT
+        // 3. Generate JWT with type: 'session'
         const token = jwt.sign(
-            { id: admin.id, email: admin.email, role: 'admin' },
+            { id: admin.id, email: admin.email, role: 'admin', type: 'session' },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
