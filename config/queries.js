@@ -55,7 +55,7 @@ function buildQuery(filters = {}) {
       INNER JOIN students s ON r.student_id = s.id
       INNER JOIN exams e ON r.exam_id = e.id
       LEFT JOIN tests t ON t.title = e.name
-      LEFT JOIN proctoring_violations pv ON pv.student_id = s.id AND pv.test_id = t.id
+      LEFT JOIN proctoring_violations pv ON pv.student_id = s.id::VARCHAR AND pv.test_id = t.id
       WHERE 1=1 AND t.id IS NOT NULL
   `;
   
