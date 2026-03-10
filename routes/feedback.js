@@ -25,6 +25,17 @@ router.post('/', async (req, res) => {
             });
         }
 
+        // Validate rating if provided (must be 1-5)
+        if (rating !== null && rating !== undefined) {
+            const ratingInt = parseInt(rating);
+            if (isNaN(ratingInt) || ratingInt < 1 || ratingInt > 5) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Rating must be between 1 and 5'
+                });
+            }
+        }
+
         // Insert or update feedback (upsert)
         const result = await pool.query(
             `INSERT INTO test_feedback (student_id, test_id, rating, difficulty, feedback_text, submission_reason)

@@ -215,22 +215,79 @@ router.post('/:id/join', verifyAnyUser, async (req, res) => {
   }
 });
 
-// Start call (Admin only) - marks interview as in progress
+// Start call (Admin only) - marks interview as in progress and notifies student dashboard
 router.post('/:id/start', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Load interview + student info
+    const result = await db.pool.query(
+      `SELECT i.id, i.student_id, t.title as test_title, s.institute as institute_name
+       FROM interviews i
+       JOIN tests t ON i.test_id = t.id
+       JOIN students s ON i.student_id = s.id
+       WHERE i.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Interview not found' });
+    }
+
+    const interview = result.rows[0];
+
+    // Mark as in progress
     await db.pool.query(
       `UPDATE interviews
        SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND status = 'scheduled'`,
+       WHERE id = $1`,
       [id]
     );
+
+    // Emit incoming-call notification to student's dashboard room
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`student-dashboard-${interview.student_id}`).emit('interview:incoming-call', {
+        interviewId: interview.id,
+        testTitle: interview.test_title,
+        instituteName: interview.institute_name
+      });
+    }
 
     res.json({ success: true });
   } catch (error) {
     console.error('Start interview error:', error);
     res.status(500).json({ success: false, message: 'Failed to start interview' });
+  }
+});
+
+// Clear student's peer ID when they leave the room (student only)
+router.post('/:id/leave', verifyAnyUser, async (req, res) => {
+  try {
+    if (req.authType !== 'student') {
+      return res.status(403).json({ success: false, message: 'Only students can leave interview room' });
+    }
+
+    const { id } = req.params;
+    const studentId = await resolveStudentDbIdFromFirebase(req);
+    if (!studentId) {
+      return res.status(404).json({ success: false, message: 'Student not found' });
+    }
+
+    const allowed = await db.pool.query('SELECT id FROM interviews WHERE id = $1 AND student_id = $2', [id, studentId]);
+    if (allowed.rows.length === 0) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    await db.pool.query(
+      'UPDATE interviews SET peer_id = NULL WHERE id = $1 AND student_id = $2',
+      [id, studentId]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Leave interview error:', error);
+    res.status(500).json({ success: false, message: 'Failed to leave interview' });
   }
 });
 

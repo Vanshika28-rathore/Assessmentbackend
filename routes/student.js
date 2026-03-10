@@ -937,12 +937,22 @@ router.post('/create', verifyAdmin, async (req, res) => {
         const normalizedInstitute = institute.trim().toLowerCase();
         const displayInstitute = institute.trim();
 
+        // Generate a unique roll_number if not provided
+        let finalRollNumber = roll_number && roll_number.trim() ? roll_number.trim() : null;
+        
+        if (!finalRollNumber) {
+            // Auto-generate roll number: INST-TIMESTAMP-RANDOM
+            const timestamp = Date.now();
+            const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+            finalRollNumber = `${normalizedInstitute.substring(0, 4).toUpperCase()}-${timestamp}-${random}`;
+        }
+
         // Insert new student (without firebase_uid - manual creation)
         const result = await client.query(
             `INSERT INTO students (full_name, email, roll_number, institute, created_at, updated_at)
              VALUES ($1, $2, $3, $4, NOW(), NOW())
              RETURNING id, full_name, email, roll_number, institute, created_at`,
-            [full_name, email, roll_number || null, normalizedInstitute]
+            [full_name, email, finalRollNumber, normalizedInstitute]
         );
 
         const newStudent = result.rows[0];
