@@ -99,14 +99,14 @@ router.post('/', verifySession, upload.single('image'), async (req, res) => {
             hasImage: !!imagePath
         });
 
-        // Emit socket notification to admins
+        // Emit socket notification to admins - FIXED: Use correct variables
         const io = req.app.get('io');
         if (io) {
             io.to('admin-support-room').emit('support:new-student-message', {
                 id: result.rows[0].id,
-                studentName: name?.trim() || 'Anonymous',
+                studentName: student.full_name || 'Anonymous',
                 studentId: studentId || null,
-                college: college || null,
+                college: student.institute || null,
                 messagePreview: message.trim().substring(0, 100) + (message.length > 100 ? '...' : ''),
                 topic: topic || 'General',
                 createdAt: result.rows[0].created_at,
@@ -134,25 +134,37 @@ router.post('/', verifySession, upload.single('image'), async (req, res) => {
 
 /**
  * GET /api/student-messages
- * Get all student messages (Admin only)
+ * Get all student messages grouped by student (Admin only) - FIXED: Group by student_id
  */
 router.get('/', verifyAdmin, async (req, res) => {
     try {
         const { status, topic, college, page = 1, limit = 20 } = req.query;
         const offset = (page - 1) * limit;
 
+        // Get latest message from each student conversation
         let query = `
-            SELECT id, name, email, message, topic, image_path, status, created_at, read_at, 
-                   student_id, college, sender_type
-            FROM student_messages
-            WHERE sender_type = 'student'
+            WITH latest_messages AS (
+                SELECT DISTINCT ON (student_id) 
+                    id, name, email, message, topic, image_path, status, created_at, read_at, 
+                    student_id, college, sender_type,
+                    (SELECT COUNT(*) FROM student_messages sm2 WHERE sm2.student_id = sm.student_id AND sm2.sender_type = 'student' AND sm2.status = 'unread') as unread_count
+                FROM student_messages sm
+                WHERE student_id IS NOT NULL
+                ORDER BY student_id, created_at DESC
+            )
+            SELECT * FROM latest_messages
+            WHERE 1=1
         `;
         const params = [];
         let paramIndex = 1;
 
         if (status && status !== 'all') {
-            query += ` AND status = $${paramIndex++}`;
-            params.push(status);
+            if (status === 'unread') {
+                query += ` AND unread_count > 0`;
+            } else {
+                query += ` AND status = $${paramIndex++}`;
+                params.push(status);
+            }
         }
 
         if (topic) {
@@ -170,15 +182,15 @@ router.get('/', verifyAdmin, async (req, res) => {
 
         const result = await pool.query(query, params);
 
-        // Get total count
-        let countQuery = `SELECT COUNT(*) FROM student_messages WHERE sender_type = 'student'`;
+        // Get total count of unique students
+        let countQuery = `
+            SELECT COUNT(DISTINCT student_id) 
+            FROM student_messages 
+            WHERE student_id IS NOT NULL
+        `;
         const countParams = [];
         let countParamIndex = 1;
 
-        if (status && status !== 'all') {
-            countQuery += ` AND status = $${countParamIndex++}`;
-            countParams.push(status);
-        }
         if (topic) {
             countQuery += ` AND topic = $${countParamIndex++}`;
             countParams.push(topic);
@@ -219,6 +231,9 @@ router.get('/', verifyAdmin, async (req, res) => {
     }
 });
 
+// ... rest of the routes remain the same ...
+
+module.exports = router;
 /**
  * GET /api/student-messages/unread-count
  * Get unread message count (Admin only)
@@ -707,5 +722,3 @@ router.post('/:id/reply', verifyAdmin, upload.single('image'), async (req, res) 
         });
     }
 });
-
-module.exports = router;
