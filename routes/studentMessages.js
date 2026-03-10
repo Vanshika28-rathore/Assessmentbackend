@@ -93,9 +93,9 @@ router.post('/', verifySession, upload.single('image'), async (req, res) => {
         logger.info({
             event: 'student_message_created',
             messageId: result.rows[0].id,
-            topic,
+            topic: topic?.trim() || 'General',
             studentId,
-            college,
+            college: student.institute || 'Unknown',
             hasImage: !!imagePath
         });
 
