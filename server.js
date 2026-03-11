@@ -719,23 +719,51 @@ io.on('connection', (socket) => {
         
         logger.info({ interviewId, peerId, role }, 'User joined interview room');
         
-        // Notify other participant
+        // Store participant info for reconnection handling
+        if (!socket.interviewParticipants) {
+            socket.interviewParticipants = new Map();
+        }
+        socket.interviewParticipants.set(socket.id, { peerId, role, interviewId });
+        
+        // Notify other participant that someone joined
         socket.to(`interview-${interviewId}`).emit('interview:peer-joined', {
             peerId,
-            role
+            role,
+            socketId: socket.id
         });
+        
+        // Send current participants to the newly joined user
+        const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
+        if (roomSockets) {
+            const participants = [];
+            roomSockets.forEach(socketId => {
+                const participantSocket = io.sockets.sockets.get(socketId);
+                if (participantSocket && participantSocket.id !== socket.id) {
+                    participants.push({
+                        peerId: participantSocket.peerId,
+                        role: participantSocket.interviewRole,
+                        socketId: participantSocket.id
+                    });
+                }
+            });
+            
+            if (participants.length > 0) {
+                socket.emit('interview:existing-participants', { participants });
+            }
+        }
     });
     
     // Signal peer ID to other participant
     socket.on('interview:signal-peer', (data) => {
         const { interviewId, peerId } = data;
         
-        logger.info({ interviewId, peerId }, 'Signaling peer ID');
+        logger.info({ interviewId, peerId, role: socket.interviewRole }, 'Signaling peer ID');
         
         // Broadcast to other participants in the interview room
         socket.to(`interview-${interviewId}`).emit('interview:peer-available', {
             peerId,
-            role: socket.interviewRole
+            role: socket.interviewRole,
+            socketId: socket.id
         });
     });
     
@@ -765,7 +793,7 @@ io.on('connection', (socket) => {
                     [interviewId]
                 );
                 
-                // Notify student in interview room
+                // Notify student in interview room (if they're already there)
                 socket.to(`interview-${interviewId}`).emit('interview:call-started', {
                     interviewId,
                     timestamp: new Date().toISOString()
@@ -783,9 +811,21 @@ io.on('connection', (socket) => {
                     studentId: interview.student_id,
                     testTitle: interview.test_title 
                 }, 'Call notification sent to student');
+                
+                // Confirm to admin that call was initiated
+                socket.emit('interview:call-initiated', {
+                    success: true,
+                    interviewId,
+                    timestamp: new Date().toISOString()
+                });
             }
         } catch (error) {
             logger.error({ error, interviewId, studentId }, 'Error sending call notification');
+            socket.emit('interview:call-failed', {
+                success: false,
+                error: error.message,
+                interviewId
+            });
         }
     });
     
@@ -802,8 +842,38 @@ io.on('connection', (socket) => {
         });
     });
     
+    // Handle WebRTC signaling
+    socket.on('interview:webrtc-signal', (data) => {
+        const { interviewId, targetSocketId, signal, type } = data;
+        
+        logger.info({ 
+            interviewId, 
+            targetSocketId, 
+            type,
+            from: socket.interviewRole 
+        }, 'WebRTC signal received');
+        
+        // Forward signal to specific target socket
+        if (targetSocketId) {
+            socket.to(targetSocketId).emit('interview:webrtc-signal', {
+                signal,
+                type,
+                fromSocketId: socket.id,
+                fromRole: socket.interviewRole
+            });
+        } else {
+            // Broadcast to all other participants in room
+            socket.to(`interview-${interviewId}`).emit('interview:webrtc-signal', {
+                signal,
+                type,
+                fromSocketId: socket.id,
+                fromRole: socket.interviewRole
+            });
+        }
+    });
+    
     // Chat message in interview room
-    socket.on('interview:send-chat', (data) => {
+    socket.on('interview:send-chat', async (data) => {
         const { interviewId, sender, senderName, text, timestamp } = data;
         
         logger.info({ 
@@ -815,21 +885,78 @@ io.on('connection', (socket) => {
             room: `interview-${interviewId}`
         }, 'Chat message received, broadcasting to room');
         
-        // Broadcast to other participant in the interview room
-        const sent = socket.to(`interview-${interviewId}`).emit('interview:chat-message', {
-            sender,
-            senderName,
-            text,
-            timestamp
-        });
+        try {
+            // Store chat message in database for persistence
+            await pool.query(
+                `INSERT INTO interview_chat_messages (interview_id, sender_type, sender_name, message, created_at)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [interviewId, sender, senderName, text, timestamp]
+            );
+            
+            // Broadcast to other participant in the interview room
+            socket.to(`interview-${interviewId}`).emit('interview:chat-message', {
+                sender,
+                senderName,
+                text,
+                timestamp
+            });
+            
+            // Confirm to sender
+            socket.emit('interview:chat-sent', {
+                success: true,
+                timestamp
+            });
+            
+            logger.info({ interviewId }, 'Chat message stored and broadcasted');
+        } catch (error) {
+            logger.error({ error, interviewId }, 'Error storing chat message');
+            socket.emit('interview:chat-sent', {
+                success: false,
+                error: error.message,
+                timestamp
+            });
+        }
+    });
+    
+    // Get chat history for interview room
+    socket.on('interview:get-chat-history', async (data) => {
+        const { interviewId } = data;
         
-        // Confirm to sender
-        socket.emit('interview:chat-sent', {
-            success: true,
-            timestamp
-        });
+        try {
+            const result = await pool.query(
+                `SELECT sender_type, sender_name, message, created_at
+                 FROM interview_chat_messages
+                 WHERE interview_id = $1
+                 ORDER BY created_at ASC`,
+                [interviewId]
+            );
+            
+            socket.emit('interview:chat-history', {
+                success: true,
+                messages: result.rows
+            });
+        } catch (error) {
+            logger.error({ error, interviewId }, 'Error fetching chat history');
+            socket.emit('interview:chat-history', {
+                success: false,
+                error: error.message,
+                messages: []
+            });
+        }
+    });
+    
+    // Connection status updates
+    socket.on('interview:connection-status', (data) => {
+        const { interviewId, status, quality } = data;
         
-        logger.info({ interviewId, sent }, 'Chat message broadcasted');
+        // Broadcast connection status to other participants
+        socket.to(`interview-${interviewId}`).emit('interview:peer-connection-status', {
+            peerId: socket.peerId,
+            role: socket.interviewRole,
+            status,
+            quality,
+            timestamp: new Date().toISOString()
+        });
     });
     
     // Leave interview room
@@ -840,10 +967,73 @@ io.on('connection', (socket) => {
         
         // Notify other participant
         socket.to(`interview-${interviewId}`).emit('interview:peer-left', {
-            role: socket.interviewRole
+            role: socket.interviewRole,
+            peerId: socket.peerId,
+            socketId: socket.id
         });
         
         socket.leave(`interview-${interviewId}`);
+        
+        // Clear interview-related data
+        socket.interviewId = null;
+        socket.interviewRole = null;
+        socket.peerId = null;
+    });
+    
+    // Reconnection handling
+    socket.on('interview:reconnect', async (data) => {
+        const { interviewId, peerId, role } = data;
+        
+        logger.info({ interviewId, peerId, role }, 'User reconnecting to interview');
+        
+        // Rejoin the room
+        socket.join(`interview-${interviewId}`);
+        socket.interviewId = interviewId;
+        socket.interviewRole = role;
+        socket.peerId = peerId;
+        
+        // Notify other participants about reconnection
+        socket.to(`interview-${interviewId}`).emit('interview:peer-reconnected', {
+            peerId,
+            role,
+            socketId: socket.id
+        });
+        
+        // Send current participants to the reconnected user
+        const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
+        if (roomSockets) {
+            const participants = [];
+            roomSockets.forEach(socketId => {
+                const participantSocket = io.sockets.sockets.get(socketId);
+                if (participantSocket && participantSocket.id !== socket.id) {
+                    participants.push({
+                        peerId: participantSocket.peerId,
+                        role: participantSocket.interviewRole,
+                        socketId: participantSocket.id
+                    });
+                }
+            });
+            
+            socket.emit('interview:existing-participants', { participants });
+        }
+        
+        // Send chat history
+        try {
+            const result = await pool.query(
+                `SELECT sender_type, sender_name, message, created_at
+                 FROM interview_chat_messages
+                 WHERE interview_id = $1
+                 ORDER BY created_at ASC`,
+                [interviewId]
+            );
+            
+            socket.emit('interview:chat-history', {
+                success: true,
+                messages: result.rows
+            });
+        } catch (error) {
+            logger.error({ error, interviewId }, 'Error fetching chat history on reconnect');
+        }
     });
 
     // Keepalive ping
