@@ -667,6 +667,158 @@ io.on('connection', (socket) => {
         }
     });
 
+
+     // Admin force-stops a student's test (for suspected cheating)
+    socket.on('admin:force-stop-test', async (data) => {
+        const { studentId, testId, reason, adminId, adminName, violationSummary } = data;
+
+        console.log('========================================');
+        console.log('🛑 FORCE-STOP REQUEST RECEIVED');
+        console.log('Student ID:', studentId);
+        console.log('Test ID:', testId);
+        console.log('Admin ID:', adminId);
+        console.log('Reason:', reason);
+        console.log('========================================');
+
+        logger.warn({ 
+            studentId, 
+            testId, 
+            adminId, 
+            reason: reason?.substring(0, 50) + '...' 
+        }, '🛑 Admin force-stopping student test');
+
+        // Validate admin authorization
+        console.log('Checking admin authorization... socket.isAdmin =', socket.isAdmin);
+        if (!socket.isAdmin) {
+            console.log('❌ UNAUTHORIZED - Admin flag not set');
+            logger.warn({ socketId: socket.id }, 'Unauthorized force-stop attempt');
+            socket.emit('admin:force-stop-failed', { 
+                studentId, 
+                error: 'Unauthorized: Admin access required' 
+            });
+            return;
+        }
+        console.log('✅ Admin authorized');
+
+        // Validate required fields
+        if (!studentId || !testId || !reason || !adminId) {
+            console.log('❌ MISSING REQUIRED FIELDS');
+            logger.warn({ studentId, testId }, 'Force-stop missing required fields');
+            socket.emit('admin:force-stop-failed', { 
+                studentId, 
+                error: 'Missing required fields' 
+            });
+            return;
+        }
+        console.log('✅ All required fields present');
+
+        // Find active student session
+        const studentIdStr = String(studentId);
+        console.log('Looking for student session:', studentIdStr);
+        console.log('Active sessions:', Array.from(activeSessions.keys()));
+        const studentSession = activeSessions.get(studentIdStr);
+
+        if (!studentSession) {
+            console.log('❌ STUDENT NOT IN ACTIVE SESSION');
+            logger.warn({ studentId: studentIdStr }, 'Cannot force-stop: Student not in active session');
+            socket.emit('admin:force-stop-failed', { 
+                studentId: studentIdStr, 
+                error: 'Student is not currently taking a test' 
+            });
+            return;
+        }
+        console.log('✅ Student session found:', studentSession);
+
+        try {
+            console.log('📝 Inserting termination record into database...');
+            // 1. Store forced termination record in database
+            const terminationResult = await pool.query(
+                `INSERT INTO forced_terminations 
+                (student_id, test_id, admin_id, admin_name, reason, violation_summary, student_notified) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id`,
+                [studentId, testId, adminId, adminName || 'Admin', reason, violationSummary || '', false]
+            );
+
+            const terminationId = terminationResult.rows[0].id;
+            console.log('✅ Termination record created with ID:', terminationId);
+
+            logger.info({ 
+                terminationId, 
+                studentId, 
+                testId, 
+                adminId 
+            }, 'Forced termination record created');
+
+            console.log('📤 Sending force-stop command to student socket:', studentSession.socketId);
+            // 2. Send force-stop command to specific student
+            io.to(studentSession.socketId).emit('proctoring:force-stopped', {
+                testId: testId,
+                reason: reason,
+                adminName: adminName || 'Admin',
+                timestamp: new Date().toISOString(),
+                terminationId: terminationId
+            });
+            console.log('✅ Force-stop command sent to student');
+
+            console.log('📝 Updating student_notified flag...');
+            // 3. Update termination record to mark student as notified
+            await pool.query(
+                `UPDATE forced_terminations SET student_notified = TRUE WHERE id = $1`,
+                [terminationId]
+            );
+            console.log('✅ Student marked as notified');
+
+            console.log('📤 Sending success response to admin...');
+            // 4. Confirm success to admin
+            socket.emit('admin:force-stop-success', { 
+                studentId: studentIdStr,
+                studentName: studentSession.studentName,
+                testId: testId,
+                terminationId: terminationId,
+                timestamp: new Date().toISOString()
+            });
+            console.log('✅ Success response sent to admin');
+
+            console.log('📢 Notifying other admins...');
+            // 5. Notify all other admins about the action
+            socket.to('admin-room').emit('admin:test-forcibly-stopped', {
+                studentId: studentIdStr,
+                studentName: studentSession.studentName,
+                testId: testId,
+                testTitle: studentSession.testTitle,
+                adminName: adminName || 'Admin',
+                reason: reason,
+                timestamp: new Date().toISOString()
+            });
+            console.log('✅ Other admins notified');
+
+            logger.info({ 
+                terminationId,
+                studentId, 
+                studentName: studentSession.studentName,
+                testId,
+                adminId,
+                adminName 
+            }, '✅ Test force-stopped successfully');
+
+            console.log('========================================');
+            console.log('✅ FORCE-STOP COMPLETED SUCCESSFULLY');
+            console.log('========================================');
+
+        } catch (error) {
+            console.log('========================================');
+            console.log('❌ DATABASE ERROR');
+            console.error('Error details:', error);
+            console.log('========================================');
+            logger.error({ error, studentId, testId, adminId }, 'Error force-stopping test');
+            socket.emit('admin:force-stop-failed', { 
+                studentId: studentIdStr, 
+                error: 'Database error - failed to record termination' 
+            });
+        }
+    });
+
     // ============================================
     // END PROCTORING MESSAGING EVENTS
     // ============================================

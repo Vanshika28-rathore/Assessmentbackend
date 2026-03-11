@@ -783,11 +783,28 @@ router.post('/submit-exam', async (req, res) => {
         }
 
         // 6. Store result in database
-        const resultInsert = await pool.query(`
-            INSERT INTO results (student_id, exam_id, marks_obtained, total_marks, status)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id
-        `, [studentId, finalExamId, marksObtained, totalMarks, status]);
+        // Handle forced termination metadata
+        let resultInsert;
+        if (submissionReason === 'forced_termination') {
+            // For forced terminations, mark the result specially
+            resultInsert = await pool.query(`
+                INSERT INTO results (
+                    student_id, exam_id, marks_obtained, total_marks, status,
+                    termination_reason, is_forced_termination
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id
+            `, [studentId, finalExamId, marksObtained, totalMarks, status, 'admin_forced_stop', true]);
+            
+            console.log('⚠️ Result marked as forced termination by admin');
+        } else {
+            // Normal submission
+            resultInsert = await pool.query(`
+                INSERT INTO results (student_id, exam_id, marks_obtained, total_marks, status)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id
+            `, [studentId, finalExamId, marksObtained, totalMarks, status]);
+        }
 
         // 7. Clear saved progress after successful submission
         try {
