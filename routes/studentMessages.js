@@ -126,18 +126,35 @@ router.get('/', verifyAdmin, async (req, res) => {
         const { status, topic, college, page = 1, limit = 20 } = req.query;
         const offset = (page - 1) * limit;
 
+        // Get conversations (grouped by student_id) with latest message info
         let query = `
-            SELECT id, name, email, message, topic, image_path, status, created_at, read_at, 
-                   student_id, college, sender_type
-            FROM student_messages
-            WHERE sender_type = 'student'
+            WITH latest_messages AS (
+                SELECT DISTINCT ON (COALESCE(student_id, 'anonymous_' || id::text)) 
+                    COALESCE(student_id, 'anonymous_' || id::text) as conversation_id,
+                    id, name, email, message, topic, image_path, status, created_at, read_at, 
+                    student_id, college, sender_type,
+                    (SELECT COUNT(*) FROM student_messages sm2 
+                     WHERE COALESCE(sm2.student_id, 'anonymous_' || sm2.id::text) = COALESCE(student_messages.student_id, 'anonymous_' || student_messages.id::text)) as message_count,
+                    (SELECT COUNT(*) FROM student_messages sm3 
+                     WHERE COALESCE(sm3.student_id, 'anonymous_' || sm3.id::text) = COALESCE(student_messages.student_id, 'anonymous_' || student_messages.id::text) 
+                     AND sm3.status = 'unread' AND sm3.sender_type = 'student') as unread_count
+                FROM student_messages
+                WHERE sender_type = 'student'
+                ORDER BY COALESCE(student_id, 'anonymous_' || id::text), created_at DESC
+            )
+            SELECT * FROM latest_messages
+            WHERE 1=1
         `;
         const params = [];
         let paramIndex = 1;
 
         if (status && status !== 'all') {
-            query += ` AND status = $${paramIndex++}`;
-            params.push(status);
+            if (status === 'unread') {
+                query += ` AND unread_count > 0`;
+            } else {
+                query += ` AND status = $${paramIndex++}`;
+                params.push(status);
+            }
         }
 
         if (topic) {
@@ -155,14 +172,30 @@ router.get('/', verifyAdmin, async (req, res) => {
 
         const result = await pool.query(query, params);
 
-        // Get total count
-        let countQuery = `SELECT COUNT(*) FROM student_messages WHERE sender_type = 'student'`;
+        // Get total count of conversations
+        let countQuery = `
+            WITH conversations AS (
+                SELECT DISTINCT COALESCE(student_id, 'anonymous_' || id::text) as conversation_id,
+                    MAX(CASE WHEN sender_type = 'student' THEN status END) as latest_status,
+                    MAX(topic) as topic,
+                    MAX(college) as college,
+                    COUNT(CASE WHEN status = 'unread' AND sender_type = 'student' THEN 1 END) as unread_count
+                FROM student_messages
+                WHERE sender_type = 'student'
+                GROUP BY COALESCE(student_id, 'anonymous_' || id::text)
+            )
+            SELECT COUNT(*) FROM conversations WHERE 1=1
+        `;
         const countParams = [];
         let countParamIndex = 1;
 
         if (status && status !== 'all') {
-            countQuery += ` AND status = $${countParamIndex++}`;
-            countParams.push(status);
+            if (status === 'unread') {
+                countQuery += ` AND unread_count > 0`;
+            } else {
+                countQuery += ` AND latest_status = $${countParamIndex++}`;
+                countParams.push(status);
+            }
         }
         if (topic) {
             countQuery += ` AND topic = $${countParamIndex++}`;
