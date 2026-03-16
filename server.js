@@ -869,7 +869,8 @@ io.on('connection', (socket) => {
         socket.interviewRole = role;
         socket.peerId = peerId;
         
-        logger.info({ interviewId, peerId, role }, 'User joined interview room');
+        logger.info({ interviewId, peerId, role, socketId: socket.id }, 'User joined interview room');
+        console.log(`Socket ${socket.id} (${role}) joined room interview-${interviewId} with peer ID ${peerId}`);
         
         // Store participant info for reconnection handling
         if (!socket.interviewParticipants) {
@@ -886,6 +887,8 @@ io.on('connection', (socket) => {
         
         // Send current participants to the newly joined user
         const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
+        console.log(`Current sockets in room interview-${interviewId}:`, roomSockets ? Array.from(roomSockets) : 'No sockets');
+        
         if (roomSockets) {
             const participants = [];
             roomSockets.forEach(socketId => {
@@ -946,10 +949,23 @@ io.on('connection', (socket) => {
                 );
                 
                 // Notify student in interview room (if they're already there)
+                console.log(`Sending call-started event to interview room: interview-${interviewId}`);
+                const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
+                console.log(`Sockets in room interview-${interviewId}:`, roomSockets ? Array.from(roomSockets) : 'No sockets');
+                
                 socket.to(`interview-${interviewId}`).emit('interview:call-started', {
                     interviewId,
                     timestamp: new Date().toISOString()
                 });
+                
+                // Also send emergency call event as fallback
+                setTimeout(() => {
+                    console.log(`Sending emergency call event to interview room: interview-${interviewId}`);
+                    socket.to(`interview-${interviewId}`).emit('interview:emergency-call', {
+                        interviewId,
+                        timestamp: new Date().toISOString()
+                    });
+                }, 1000);
                 
                 // Notify student on dashboard (if they're on dashboard page)
                 io.to(`student-dashboard-${interview.student_id}`).emit('interview:incoming-call', {
@@ -990,6 +1006,20 @@ io.on('connection', (socket) => {
         // Notify admin in the interview room
         socket.to(`interview-${interviewId}`).emit('interview:student-ready', {
             peerId,
+            timestamp: new Date().toISOString()
+        });
+    });
+    
+    // Student joined interview room - notify admin
+    socket.on('interview:student-joined-room', (data) => {
+        const { interviewId, peerId, studentId } = data;
+        
+        logger.info({ interviewId, peerId, studentId }, 'Student joined interview room');
+        
+        // Notify admin in the interview room
+        socket.to(`interview-${interviewId}`).emit('interview:student-joined-room', {
+            peerId,
+            studentId,
             timestamp: new Date().toISOString()
         });
     });
