@@ -545,6 +545,35 @@ router.delete('/conversation/:studentId', verifyAdmin, async (req, res) => {
 });
 
 /**
+ * PATCH /api/student-messages/conversation/:studentId/read
+ * Mark all unread student messages in a conversation as read (Admin only)
+ */
+router.patch('/conversation/:studentId/read', verifyAdmin, async (req, res) => {
+    try {
+        const { studentId } = req.params;
+
+        const result = await pool.query(
+            `UPDATE student_messages 
+             SET status = 'read', read_at = NOW()
+             WHERE student_id = $1 AND sender_type = 'student' AND status = 'unread'
+             RETURNING id`,
+            [studentId]
+        );
+
+        res.json({
+            success: true,
+            updated: result.rowCount
+        });
+    } catch (error) {
+        logger.error({ err: error, event: 'mark_conversation_read_error' });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to mark conversation as read'
+        });
+    }
+});
+
+/**
  * POST /api/student-messages/mark-all-read
  * Mark all messages as read (Admin only)
  */
