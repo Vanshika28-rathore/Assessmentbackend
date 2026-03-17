@@ -264,8 +264,8 @@ router.get('/test/:testId', verifySession, async (req, res) => {
             // Check if already attempted for this application
             const attemptCheck = await pool.query(`
                 SELECT id FROM test_attempts
-                WHERE job_application_id = $1 AND student_id = $2 AND test_id = $3
-            `, [applicationId, studentId, testId]);
+                WHERE student_id = $1 AND test_id = $2
+            `, [studentId, testId]);
 
             if (attemptCheck.rows.length > 0) {
                 // Allow resume only if exam_progress exists
@@ -700,8 +700,8 @@ router.post('/submit-exam', async (req, res) => {
             const jobAppAttemptCheck = await pool.query(`
                 SELECT COUNT(*) as attempt_count
                 FROM test_attempts
-                WHERE job_application_id = $1 AND student_id = $2 AND test_id = $3
-            `, [resolvedApplicationId, studentId, testId]);
+                WHERE student_id = $1 AND test_id = $2
+            `, [studentId, testId]);
             attemptsTaken = parseInt(jobAppAttemptCheck.rows[0]?.attempt_count) || 0;
             console.log(`Job application test - Attempts taken: ${attemptsTaken}/${maxAttempts}`);
         } else {
@@ -885,14 +885,14 @@ router.post('/submit-exam', async (req, res) => {
         // Update job application test_attempts and auto-update application status
         if (resolvedApplicationId) {
             await pool.query(`
-                INSERT INTO test_attempts (student_id, test_id, total_marks, obtained_marks, percentage, job_application_id, submitted_at)
-                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-                ON CONFLICT (student_id, test_id, job_application_id) DO UPDATE SET
+                INSERT INTO test_attempts (student_id, test_id, total_marks, obtained_marks, percentage, submitted_at)
+                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                ON CONFLICT (student_id, test_id) DO UPDATE SET
                     total_marks = EXCLUDED.total_marks,
                     obtained_marks = EXCLUDED.obtained_marks,
                     percentage = EXCLUDED.percentage,
                     submitted_at = CURRENT_TIMESTAMP
-            `, [studentId, testId, totalMarks, marksObtained, percentage, resolvedApplicationId]);
+            `, [studentId, testId, totalMarks, marksObtained, percentage]);
 
             try {
                 const totalTestsResult = await pool.query(`

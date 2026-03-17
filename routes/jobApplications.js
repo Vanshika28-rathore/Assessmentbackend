@@ -672,7 +672,7 @@ router.get('/:applicationId/tests', verifySession, async (req, res) => {
              WHERE jot.job_opening_id = $1
              GROUP BY t.id, t.title, t.description, t.duration, t.passing_percentage, jot.is_mandatory, jot.passing_criteria, jot.created_at
              ORDER BY jot.created_at ASC`,
-            [jobOpeningId, studentId, applicationId]
+            [jobOpeningId, studentId]
         );
 
         res.json({
