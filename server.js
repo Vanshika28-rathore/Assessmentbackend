@@ -69,7 +69,6 @@ const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
 // Serve static files for uploaded images BEFORE helmet (to avoid CSP issues)
-const path = require('path');
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
     setHeaders: (res) => {
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
