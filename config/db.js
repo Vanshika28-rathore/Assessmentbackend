@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
-require('dotenv').config();
-
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 // Create PostgreSQL connection pool
 // Support both individual credentials and DATABASE_URL
 const poolConfig = process.env.DATABASE_URL

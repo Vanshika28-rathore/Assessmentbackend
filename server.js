@@ -3,7 +3,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 // Import configurations
 const { pool } = require('./config/db');
@@ -23,6 +24,8 @@ const institutesRoutes = require('./routes/institutes');
 const proctoringRoutes = require('./routes/proctoring');
 const feedbackRoutes = require('./routes/feedback');
 const settingsRoutes = require('./routes/settings');
+const jobOpeningsRoutes = require('./routes/jobOpenings');
+const jobApplicationsRoutes = require('./routes/jobApplications');
 const studentMessagesRoutes = require('./routes/studentMessages');
 // DISABLED: Coding questions and code execution features
 // const codeExecutionRoutes = require('./routes/codeExecution.routes');
@@ -55,7 +58,7 @@ const io = new Server(server, {
     },
     pingTimeout: 60000,
     pingInterval: 25000,
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'],
     allowEIO3: true,
     upgradeTimeout: 30000, // Allow 30 seconds for transport upgrade
     maxHttpBufferSize: 1e8 // 100 MB
@@ -141,6 +144,8 @@ app.use('/api/institutes', institutesRoutes);
 app.use('/api/proctoring', proctoringRoutes);
 app.use('/api/feedback', checkMaintenance, feedbackRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/job-openings', jobOpeningsRoutes); // Job Openings & Off-Campus Hiring
+app.use('/api/job-applications', jobApplicationsRoutes); // Job Applications & Recruitment
 app.use('/api/student-messages', studentMessagesRoutes);
 // DISABLED: Coding questions and code execution features
 // app.use('/api/code', codeExecutionRoutes);

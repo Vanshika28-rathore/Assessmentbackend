@@ -210,6 +210,7 @@ router.get('/tests', verifySession, async (req, res) => {
  */
 router.get('/test/:testId', verifySession, async (req, res) => {
     const { testId } = req.params;
+    const { applicationId } = req.query;
     const firebaseUid = req.firebaseUid;
 
     try {
@@ -238,71 +239,113 @@ router.get('/test/:testId', verifySession, async (req, res) => {
 
         const test = testResult.rows[0];
 
-        // Check if test is assigned to this student
-        const assignmentCheck = await pool.query(
-            'SELECT * FROM test_assignments WHERE test_id = $1 AND student_id = $2 AND is_active = true',
-            [testId, studentId]
-        );
+        const isJobApplicationTest = !!applicationId;
+        let isAssigned = false;
 
-        const isAssigned = assignmentCheck.rows.length > 0;
+        if (isJobApplicationTest) {
+            // Validate test belongs to this job application
+            const jobAppCheck = await pool.query(`
+                SELECT ja.id, ja.status, jo.id as job_opening_id
+                FROM job_applications ja
+                INNER JOIN job_openings jo ON ja.job_opening_id = jo.id
+                INNER JOIN job_opening_tests jot ON jot.job_opening_id = jo.id
+                WHERE ja.id = $1 AND ja.student_id = $2 AND jot.test_id = $3
+            `, [applicationId, studentId, testId]);
 
-        // Only allow access if test is assigned to this student
-        if (!isAssigned) {
-            return res.status(403).json({
-                success: false,
-                message: 'This test is not assigned to you. Please contact your administrator.'
-            });
-        }
-
-        // Check if test is within available time window
-        const now = new Date();
-        const startDate = test.start_datetime ? new Date(test.start_datetime) : null;
-        const endDate = test.end_datetime ? new Date(test.end_datetime) : null;
-        
-        if (startDate && now < startDate) {
-            return res.status(403).json({
-                success: false,
-                message: `This test is not yet available. It will be available from ${startDate.toLocaleString()}`,
-                notYetAvailable: true
-            });
-        }
-        
-        if (endDate && now > endDate) {
-            return res.status(403).json({
-                success: false,
-                message: `This test has expired. It was available until ${endDate.toLocaleString()}`,
-                expired: true
-            });
-        }
-
-        // Check how many attempts the student has made
-        const attemptsCheck = await pool.query(`
-            SELECT COUNT(*) as attempts_count
-            FROM results r
-            INNER JOIN exams e ON r.exam_id = e.id
-            WHERE r.student_id = $1 AND e.name LIKE '%' || $2 || '%'
-        `, [studentId, test.title]);
-
-        const attemptsTaken = parseInt(attemptsCheck.rows[0]?.attempts_count) || 0;
-        const maxAttempts = test.max_attempts || 1;
-
-        // Block access only if max attempts exceeded AND no saved progress
-        if (attemptsTaken >= maxAttempts) {
-            // Check if there's saved progress
-            const progressCheck = await pool.query(`
-                SELECT id FROM exam_progress
-                WHERE student_id = $1 AND test_id = $2
-            `, [studentId, testId]);
-
-            // If no progress and attempts exceeded, block access
-            if (progressCheck.rows.length === 0) {
+            if (jobAppCheck.rows.length === 0) {
                 return res.status(403).json({
                     success: false,
-                    message: 'You have used all your attempts for this test',
-                    alreadyTaken: true,
-                    attemptsTaken: attemptsTaken,
-                    maxAttempts: maxAttempts
+                    message: 'This test is not assigned to your job application.'
                 });
+            }
+
+            isAssigned = true;
+
+            // Check if already attempted for this application
+            const attemptCheck = await pool.query(`
+                SELECT id FROM test_attempts
+                WHERE job_application_id = $1 AND student_id = $2 AND test_id = $3
+            `, [applicationId, studentId, testId]);
+
+            if (attemptCheck.rows.length > 0) {
+                // Allow resume only if exam_progress exists
+                const progressCheck = await pool.query(`
+                    SELECT id FROM exam_progress
+                    WHERE student_id = $1 AND test_id = $2
+                `, [studentId, testId]);
+
+                if (progressCheck.rows.length === 0) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'You have already completed this test for this job application.',
+                        alreadyTaken: true
+                    });
+                }
+            }
+        } else {
+            // Regular assignment check
+            const assignmentCheck = await pool.query(
+                'SELECT * FROM test_assignments WHERE test_id = $1 AND student_id = $2 AND is_active = true',
+                [testId, studentId]
+            );
+
+            isAssigned = assignmentCheck.rows.length > 0;
+
+            if (!isAssigned) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'This test is not assigned to you. Please contact your administrator.'
+                });
+            }
+
+            // Check if test is within available time window
+            const now = new Date();
+            const startDate = test.start_datetime ? new Date(test.start_datetime) : null;
+            const endDate = test.end_datetime ? new Date(test.end_datetime) : null;
+
+            if (startDate && now < startDate) {
+                return res.status(403).json({
+                    success: false,
+                    message: `This test is not yet available. It will be available from ${startDate.toLocaleString()}`,
+                    notYetAvailable: true
+                });
+            }
+
+            if (endDate && now > endDate) {
+                return res.status(403).json({
+                    success: false,
+                    message: `This test has expired. It was available until ${endDate.toLocaleString()}`,
+                    expired: true
+                });
+            }
+
+            // Check how many attempts the student has made
+            const attemptsCheck = await pool.query(`
+                SELECT COUNT(*) as attempts_count
+                FROM results r
+                INNER JOIN exams e ON r.exam_id = e.id
+                WHERE r.student_id = $1 AND e.name LIKE '%' || $2 || '%'
+            `, [studentId, test.title]);
+
+            const attemptsTaken = parseInt(attemptsCheck.rows[0]?.attempts_count) || 0;
+            const maxAttempts = test.max_attempts || 1;
+
+            // Block access only if max attempts exceeded AND no saved progress
+            if (attemptsTaken >= maxAttempts) {
+                const progressCheck = await pool.query(`
+                    SELECT id FROM exam_progress
+                    WHERE student_id = $1 AND test_id = $2
+                `, [studentId, testId]);
+
+                if (progressCheck.rows.length === 0) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'You have used all your attempts for this test',
+                        alreadyTaken: true,
+                        attemptsTaken: attemptsTaken,
+                        maxAttempts: maxAttempts
+                    });
+                }
             }
         }
 
@@ -515,11 +558,12 @@ router.post('/save-progress', verifySession, async (req, res) => {
  * skip token validation to prevent "login again" errors during long exams
  */
 router.post('/submit-exam', async (req, res) => {
-    const { testId, answers, examId, submissionReason, warningCount, timeRemaining, studentId: clientStudentId } = req.body;
+    const { testId, answers, examId, submissionReason, warningCount, timeRemaining, studentId: clientStudentId, applicationId } = req.body;
 
     console.log('=== SUBMIT EXAM REQUEST ===');
     console.log('Test ID:', testId);
     console.log('Client Student ID:', clientStudentId);
+    console.log('Application ID:', applicationId);
     console.log('Submission Reason:', submissionReason);
     console.log('Warning Count:', warningCount);
     console.log('Time Remaining:', timeRemaining);
@@ -599,6 +643,27 @@ router.post('/submit-exam', async (req, res) => {
 
         console.log('Student ID from DB:', studentId);
 
+        // Auto-resolve applicationId if not provided in body
+        let resolvedApplicationId = applicationId ? parseInt(applicationId, 10) : null;
+        if (!resolvedApplicationId) {
+            const matchingApplications = await pool.query(`
+                SELECT ja.id
+                FROM job_applications ja
+                INNER JOIN job_opening_tests jot ON ja.job_opening_id = jot.job_opening_id
+                WHERE ja.student_id = $1
+                  AND jot.test_id = $2
+                  AND ja.status IN ('assessment_assigned', 'assessment_completed', 'shortlisted', 'rejected')
+                ORDER BY ja.applied_at DESC
+            `, [studentId, testId]);
+
+            if (matchingApplications.rows.length === 1) {
+                resolvedApplicationId = matchingApplications.rows[0].id;
+                console.log(`[SUBMIT_EXAM] Auto-resolved applicationId=${resolvedApplicationId} for student=${studentId}, test=${testId}`);
+            } else if (matchingApplications.rows.length > 1) {
+                console.warn(`[SUBMIT_EXAM] Multiple matching applications found for student=${studentId}, test=${testId}. Skipping auto-link.`);
+            }
+        }
+
         // 2. Validate input
         if (!testId || !answers || typeof answers !== 'object') {
             return res.status(400).json({
@@ -630,14 +695,25 @@ router.post('/submit-exam', async (req, res) => {
         console.log('Test availability check skipped during submission (already validated at test start)');
 
         // Check how many attempts the student has already made
-        const existingAttemptsCheck = await pool.query(`
-            SELECT COUNT(*) as attempt_count
-            FROM results r
-            INNER JOIN exams e ON r.exam_id = e.id
-            WHERE r.student_id = $1 AND e.name LIKE '%' || $2 || '%'
-        `, [studentId, testTitle]);
-
-        const attemptsTaken = parseInt(existingAttemptsCheck.rows[0]?.attempt_count) || 0;
+        let attemptsTaken = 0;
+        if (resolvedApplicationId) {
+            const jobAppAttemptCheck = await pool.query(`
+                SELECT COUNT(*) as attempt_count
+                FROM test_attempts
+                WHERE job_application_id = $1 AND student_id = $2 AND test_id = $3
+            `, [resolvedApplicationId, studentId, testId]);
+            attemptsTaken = parseInt(jobAppAttemptCheck.rows[0]?.attempt_count) || 0;
+            console.log(`Job application test - Attempts taken: ${attemptsTaken}/${maxAttempts}`);
+        } else {
+            const existingAttemptsCheck = await pool.query(`
+                SELECT COUNT(*) as attempt_count
+                FROM results r
+                INNER JOIN exams e ON r.exam_id = e.id
+                WHERE r.student_id = $1 AND e.name LIKE '%' || $2 || '%'
+            `, [studentId, testTitle]);
+            attemptsTaken = parseInt(existingAttemptsCheck.rows[0]?.attempt_count) || 0;
+            console.log(`Regular test - Attempts taken: ${attemptsTaken}/${maxAttempts}`);
+        }
 
         if (attemptsTaken >= maxAttempts) {
             return res.status(400).json({
@@ -804,6 +880,89 @@ router.post('/submit-exam', async (req, res) => {
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
             `, [studentId, finalExamId, marksObtained, totalMarks, status]);
+        }
+
+        // Update job application test_attempts and auto-update application status
+        if (resolvedApplicationId) {
+            await pool.query(`
+                INSERT INTO test_attempts (student_id, test_id, total_marks, obtained_marks, percentage, job_application_id, submitted_at)
+                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                ON CONFLICT (student_id, test_id, job_application_id) DO UPDATE SET
+                    total_marks = EXCLUDED.total_marks,
+                    obtained_marks = EXCLUDED.obtained_marks,
+                    percentage = EXCLUDED.percentage,
+                    submitted_at = CURRENT_TIMESTAMP
+            `, [studentId, testId, totalMarks, marksObtained, percentage, resolvedApplicationId]);
+
+            try {
+                const totalTestsResult = await pool.query(`
+                    SELECT COUNT(DISTINCT jot.test_id) as total_tests
+                    FROM job_applications ja
+                    INNER JOIN job_opening_tests jot ON ja.job_opening_id = jot.job_opening_id
+                    WHERE ja.id = $1
+                `, [resolvedApplicationId]);
+
+                const completedTestsResult = await pool.query(`
+                    SELECT COUNT(DISTINCT ta.test_id) as completed_tests
+                    FROM test_attempts ta
+                    INNER JOIN job_applications ja ON ta.job_application_id = ja.id
+                    WHERE ta.job_application_id = $1 AND ta.student_id = $2
+                `, [resolvedApplicationId, studentId]);
+
+                const totalTests = parseInt(totalTestsResult.rows[0]?.total_tests) || 0;
+                const completedTests = parseInt(completedTestsResult.rows[0]?.completed_tests) || 0;
+                console.log(`[TEST_COMPLETION] Application ${resolvedApplicationId}: ${completedTests}/${totalTests} tests completed`);
+
+                if (totalTests > 0 && completedTests >= totalTests) {
+                    const testResultsCheck = await pool.query(`
+                        SELECT t.title as test_name,
+                               t.passing_percentage,
+                               ta.percentage as student_percentage,
+                               CASE WHEN ta.percentage >= t.passing_percentage THEN true
+                                    ELSE false
+                               END as passed
+                        FROM test_attempts ta
+                        INNER JOIN tests t ON ta.test_id = t.id
+                        WHERE ta.job_application_id = $1 AND ta.student_id = $2
+                    `, [resolvedApplicationId, studentId]);
+
+                    const violationsCheck = await pool.query(`
+                        SELECT COUNT(*) as total_violations
+                        FROM proctoring_violations pv
+                        INNER JOIN test_attempts ta ON pv.test_id = ta.test_id AND pv.student_id = ta.student_id::varchar
+                        WHERE ta.job_application_id = $1 AND ta.student_id = $2
+                    `, [resolvedApplicationId, studentId]);
+
+                    const allTestsPassed = testResultsCheck.rows.every(row => row.passed);
+                    const anyTestFailed = testResultsCheck.rows.some(row => !row.passed);
+                    const totalViolations = parseInt(violationsCheck.rows[0]?.total_violations) || 0;
+                    const isFlagged = totalViolations > 5;
+
+                    let newStatus = 'assessment_completed';
+                    let statusMessage = 'All tests completed';
+
+                    if (allTestsPassed && !isFlagged) {
+                        newStatus = 'shortlisted';
+                        statusMessage = 'Automatically shortlisted - passed all tests with clean proctoring record';
+                    } else if (anyTestFailed) {
+                        newStatus = 'rejected';
+                        statusMessage = 'Automatically rejected - failed one or more tests';
+                    } else if (isFlagged) {
+                        newStatus = 'rejected';
+                        statusMessage = `Automatically rejected - excessive proctoring violations (${totalViolations} violations detected)`;
+                    }
+
+                    await pool.query(`
+                        UPDATE job_applications
+                        SET status = $1,
+                            test_completed_at = CURRENT_TIMESTAMP,
+                            eligibility_notes = $2
+                        WHERE id = $3
+                    `, [newStatus, statusMessage, resolvedApplicationId]);
+                }
+            } catch (updateError) {
+                console.error('Failed to update application status (non-critical):', updateError.message);
+            }
         }
 
         // 7. Clear saved progress after successful submission

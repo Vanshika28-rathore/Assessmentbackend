@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const firebaseAdmin = require('../config/firebase');
 const verifyAdmin = require('../middleware/verifyAdmin');
 const verifyToken = require('../middleware/verifyToken');
+const { sendInterviewScheduleEmail } = require('../config/email');
 
 // Accept either admin JWT or student JWT session token
 const verifyAnyUser = async (req, res, next) => {
@@ -67,7 +68,7 @@ router.post('/schedule', verifyAdmin, async (req, res) => {
   console.log('Admin:', req.admin);
   
   try {
-    const { student_id, test_id, scheduled_time, duration } = req.body;
+    const { student_id, test_id, scheduled_time, duration, application_id } = req.body;
 
     if (!student_id || !test_id || !scheduled_time) {
       return res.status(400).json({
@@ -98,12 +99,80 @@ router.post('/schedule', verifyAdmin, async (req, res) => {
     // Store it as TIMESTAMPTZ which will preserve the UTC time
     console.log('Storing scheduled_time (UTC):', scheduled_time);
     
+    let emailContext = null;
+
+    if (application_id) {
+      const appContext = await db.pool.query(
+        `SELECT ja.id AS application_id, ja.status, jo.company_name, jo.job_role,
+                s.full_name, s.email, t.title AS test_title
+         FROM job_applications ja
+         INNER JOIN students s ON s.id = ja.student_id
+         INNER JOIN job_openings jo ON jo.id = ja.job_opening_id
+         INNER JOIN job_opening_tests jot ON jot.job_opening_id = ja.job_opening_id
+         INNER JOIN tests t ON t.id = jot.test_id
+         WHERE ja.id = $1 AND ja.student_id = $2 AND t.id = $3`,
+        [application_id, resolvedStudentId, test_id]
+      );
+
+      if (appContext.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid application/test mapping for interview scheduling'
+        });
+      }
+
+      if (appContext.rows[0].status !== 'shortlisted') {
+        return res.status(400).json({
+          success: false,
+          message: 'Interview can be scheduled only after candidate is shortlisted'
+        });
+      }
+
+      emailContext = appContext.rows[0];
+    } else {
+      const baseContext = await db.pool.query(
+        `SELECT s.full_name, s.email, t.title AS test_title
+         FROM students s
+         INNER JOIN tests t ON t.id = $2
+         WHERE s.id = $1`,
+        [resolvedStudentId, test_id]
+      );
+
+      emailContext = baseContext.rows[0] || null;
+    }
+
     const result = await db.pool.query(
       'INSERT INTO interviews (student_id, test_id, scheduled_time, duration) VALUES ($1, $2, $3::timestamptz, $4) RETURNING id, scheduled_time',
       [resolvedStudentId, test_id, scheduled_time, duration || 60]
     );
 
     console.log('Stored interview with scheduled_time:', result.rows[0].scheduled_time);
+
+    if (!emailContext?.email) {
+      await db.pool.query('DELETE FROM interviews WHERE id = $1', [result.rows[0].id]);
+      return res.status(400).json({
+        success: false,
+        message: 'Student email not found. Interview was not scheduled.'
+      });
+    }
+
+    const emailResult = await sendInterviewScheduleEmail(
+      emailContext.email,
+      emailContext.full_name || 'Student',
+      emailContext.company_name || 'Hiring Team',
+      emailContext.job_role || 'Applied Role',
+      scheduled_time,
+      duration || 60,
+      emailContext.test_title || 'Assessment'
+    );
+
+    if (!emailResult.success) {
+      await db.pool.query('DELETE FROM interviews WHERE id = $1', [result.rows[0].id]);
+      return res.status(502).json({
+        success: false,
+        message: `Interview email could not be sent to ${emailContext.email}. ${emailResult.error || 'Please check email configuration and try again.'}`
+      });
+    }
 
     return res.json({ success: true, interview_id: result.rows[0].id });
   } catch (error) {
