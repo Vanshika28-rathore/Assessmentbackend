@@ -195,6 +195,37 @@ server.listen(PORT, () => {
     console.log(`🔌 Socket.io: Ready for proctoring connections`);
     console.log(`💚 Health: http://localhost:${PORT}/health`);
     console.log(`📈 Metrics: http://localhost:${PORT}/metrics`);
+    console.log(`🔗 PeerJS: http://localhost:${PORT}/peerjs`);
+    
+    // Mount PeerJS after server is listening
+    try {
+        // Isolated Mock Server to intercept PeerJS's aggressive websocket upgrade listener
+        const mockServer = {
+            on: (event, listener) => {
+                if (event === 'upgrade') {
+                    global.peerUpgradeListener = listener;
+                }
+            },
+            listeners: () => [],
+            removeListener: () => {}
+        };
+
+        const peerServer = ExpressPeerServer(mockServer, { path: '/', proxied: true });
+        app.use('/peerjs', peerServer);
+        
+        // Manually route WebSocket upgrades to prevent Socket.io and PeerJS from clashing
+        server.on('upgrade', (req, socket, head) => {
+            if (req.url.startsWith('/peerjs/peerjs')) {
+                if (global.peerUpgradeListener) {
+                    global.peerUpgradeListener(req, socket, head);
+                }
+            }
+        });
+        
+        console.log('🔗 PeerJS signaling server ready at /peerjs');
+    } catch (e) {
+        console.warn('⚠️ PeerJS server unavailable:', e.message);
+    }
     
     // Signal PM2 that app is ready
     if (process.send) {

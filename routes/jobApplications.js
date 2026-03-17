@@ -229,7 +229,6 @@ router.get('/my-applications', verifySession, async (req, res) => {
                 FROM job_opening_tests jot
                 LEFT JOIN test_attempts ta ON ta.test_id = jot.test_id 
                     AND ta.student_id = ja.student_id
-                    AND ta.job_application_id = ja.id
                 WHERE jot.job_opening_id = jo.id
              ) AS test_counts ON true
              WHERE ja.student_id = $1
@@ -579,7 +578,6 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
              LEFT JOIN tests t ON jot.test_id = t.id
              LEFT JOIN test_attempts ta ON ta.test_id = t.id 
                 AND ta.student_id = s.id 
-                AND ta.job_application_id = ja.id
              WHERE ja.job_opening_id = $1
              ORDER BY s.full_name ASC, t.title ASC`,
             [jobId]
@@ -656,7 +654,6 @@ router.get('/:applicationId/tests', verifySession, async (req, res) => {
                         SELECT 1 FROM test_attempts ta
                         WHERE ta.test_id = t.id 
                         AND ta.student_id = $2
-                        AND ta.job_application_id = $3
                     ) THEN true
                     ELSE false
                 END AS is_completed,
@@ -666,7 +663,6 @@ router.get('/:applicationId/tests', verifySession, async (req, res) => {
                     FROM test_attempts ta
                     WHERE ta.test_id = t.id 
                     AND ta.student_id = $2
-                    AND ta.job_application_id = $3
                     ORDER BY ta.submitted_at DESC
                     LIMIT 1
                 ) AS score_percentage
