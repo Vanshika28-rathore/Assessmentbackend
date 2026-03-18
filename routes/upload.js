@@ -14,6 +14,16 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
+const normalizeJobRoles = (jobRoles) => {
+    if (!Array.isArray(jobRoles)) return [];
+    return jobRoles
+        .map((role) => ({
+            job_role: typeof role?.job_role === 'string' ? role.job_role.trim() : '',
+            job_description: typeof role?.job_description === 'string' ? role.job_description.trim() : ''
+        }))
+        .filter((role) => role.job_role !== '' || role.job_description !== '');
+};
+
 /**
  * POST /api/admin/upload/questions
  * Upload a bulk file of questions
@@ -39,10 +49,11 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
                 parsedJobRoles = [{ job_role: jobRoles, job_description: testDescription || '' }];
             }
         }
+        const normalizedJobRoles = normalizeJobRoles(parsedJobRoles);
 
         console.log('=== BULK UPLOAD REQUEST ===');
         console.log('Test Name:', testName);
-        console.log('Job Roles:', parsedJobRoles);
+        console.log('Job Roles:', normalizedJobRoles);
         console.log('Duration:', duration, 'Type:', typeof duration);
         console.log('Max Attempts:', maxAttempts, 'Type:', typeof maxAttempts);
         console.log('Passing Percentage:', passingPercentage, 'Type:', typeof passingPercentage);
@@ -104,8 +115,8 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
         }
 
         // 1. Create Test with additional details
-        const defaultJobRole = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_role : '';
-        const defaultJobDescription = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_description : testDescription || '';
+        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
+        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
         
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
@@ -125,7 +136,7 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
         const testId = testResult.rows[0].id;
 
         // 1.5. Insert multiple job roles if provided
-        if (parsedJobRoles.length > 0) {
+        if (normalizedJobRoles.length > 0) {
             await client.query(`
                 CREATE TABLE IF NOT EXISTS test_job_roles (
                     id SERIAL PRIMARY KEY,
@@ -138,8 +149,8 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
                 )
             `);
 
-            for (let i = 0; i < parsedJobRoles.length; i++) {
-                const role = parsedJobRoles[i];
+            for (let i = 0; i < normalizedJobRoles.length; i++) {
+                const role = normalizedJobRoles[i];
                 await client.query(`
                     INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
                     VALUES ($1, $2, $3, $4)
@@ -350,10 +361,11 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         if (jobRoles) {
             parsedJobRoles = Array.isArray(jobRoles) ? jobRoles : JSON.parse(jobRoles);
         }
+        const normalizedJobRoles = normalizeJobRoles(parsedJobRoles);
 
         console.log('=== MANUAL UPLOAD REQUEST ===');
         console.log('Test Name:', testName);
-        console.log('Job Roles:', parsedJobRoles);
+        console.log('Job Roles:', normalizedJobRoles);
         console.log('Duration:', duration, 'Type:', typeof duration);
         console.log('Max Attempts:', maxAttempts, 'Type:', typeof maxAttempts);
         console.log('Passing Percentage:', passingPercentage, 'Type:', typeof passingPercentage);
@@ -386,8 +398,8 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         }
 
         // Create test with additional details
-        const defaultJobRole = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_role : '';
-        const defaultJobDescription = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_description : testDescription || '';
+        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
+        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
         
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
@@ -407,7 +419,7 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         const testId = testResult.rows[0].id;
 
         // Insert multiple job roles if provided
-        if (parsedJobRoles.length > 0) {
+        if (normalizedJobRoles.length > 0) {
             await client.query(`
                 CREATE TABLE IF NOT EXISTS test_job_roles (
                     id SERIAL PRIMARY KEY,
@@ -420,8 +432,8 @@ router.post('/manual', verifyAdmin, async (req, res) => {
                 )
             `);
 
-            for (let i = 0; i < parsedJobRoles.length; i++) {
-                const role = parsedJobRoles[i];
+            for (let i = 0; i < normalizedJobRoles.length; i++) {
+                const role = normalizedJobRoles[i];
                 await client.query(`
                     INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
                     VALUES ($1, $2, $3, $4)
@@ -500,6 +512,7 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
                 parsedJobRoles = [{ job_role: jobRoles, job_description: testDescription || '' }];
             }
         }
+        const normalizedJobRoles = normalizeJobRoles(parsedJobRoles);
 
         console.log('=== BULK UPDATE REQUEST ===');
         console.log('Test ID:', testId);
@@ -562,8 +575,8 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
         await client.query('BEGIN');
 
         // Update test details
-        const defaultJobRole = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_role : '';
-        const defaultJobDescription = parsedJobRoles.length > 0 ? parsedJobRoles[0].job_description : testDescription || '';
+        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
+        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
         
         await client.query(
             `UPDATE tests 
@@ -584,17 +597,19 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
         );
 
         // Update job roles
-        if (parsedJobRoles.length > 0) {
+        if (normalizedJobRoles.length > 0) {
             await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
 
-            for (let i = 0; i < parsedJobRoles.length; i++) {
-                const role = parsedJobRoles[i];
+            for (let i = 0; i < normalizedJobRoles.length; i++) {
+                const role = normalizedJobRoles[i];
                 await client.query(`
                     INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
                     VALUES ($1, $2, $3, $4)
                     ON CONFLICT (test_id, job_role) DO NOTHING
                 `, [testId, role.job_role, role.job_description || '', i === 0]);
             }
+        } else {
+            await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
         }
 
         // Delete all existing questions

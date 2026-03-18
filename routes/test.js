@@ -5,6 +5,15 @@ const { pool } = require('../config/db');
 // const { cacheMiddleware } = require('../middleware/cache'); // DISABLED: Redis
 const verifyAdmin = require('../middleware/verifyAdmin');
 
+async function getTestsColumnSet() {
+    const result = await pool.query(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tests'
+    `);
+    return new Set(result.rows.map((r) => r.column_name));
+}
+
 /**
  * GET /api/tests/check-name/:name
  * Check if a test name is available
@@ -51,13 +60,12 @@ router.get('/', verifyAdmin, async (req, res) => {
                 t.status,
                 t.duration,
                 t.max_attempts,
-                t.passing_percentage,
                 t.start_datetime,
                 t.end_datetime,
                 COUNT(q.id) as question_count
             FROM tests t
             LEFT JOIN questions q ON t.id = q.test_id
-            GROUP BY t.id, t.title, t.description, t.job_role, t.created_at, t.status, t.duration, t.max_attempts, t.passing_percentage, t.start_datetime, t.end_datetime
+            GROUP BY t.id, t.title, t.description, t.job_role, t.created_at, t.status, t.duration, t.max_attempts, t.start_datetime, t.end_datetime
             ORDER BY t.created_at DESC
         `);
 
@@ -164,6 +172,13 @@ router.get('/institutes/:instituteName/students', verifyAdmin, async (req, res) 
 router.get('/:id', verifyAdmin, async (req, res) => {
     try {
         const { id } = req.params;
+        const testColumns = await getTestsColumnSet();
+
+        const createdBySelect = testColumns.has('created_by') ? 't.created_by' : 'NULL::text AS created_by';
+        const updatedBySelect = testColumns.has('updated_by') ? 't.updated_by' : 'NULL::text AS updated_by';
+        const updatedAtSelect = testColumns.has('updated_at') ? 't.updated_at' : 'NULL::timestamp AS updated_at';
+        const isPublishedSelect = testColumns.has('is_published') ? 't.is_published' : 'NULL::boolean AS is_published';
+        const isMockTestSelect = testColumns.has('is_mock_test') ? 't.is_mock_test' : 'NULL::boolean AS is_mock_test';
         
         // Fetch test details
         const testResult = await pool.query(`
@@ -179,11 +194,11 @@ router.get('/:id', verifyAdmin, async (req, res) => {
                 t.passing_percentage,
                 t.start_datetime,
                 t.end_datetime,
-                t.created_by,
-                t.updated_by,
-                t.updated_at,
-                t.is_published,
-                t.is_mock_test
+                ${createdBySelect},
+                ${updatedBySelect},
+                ${updatedAtSelect},
+                ${isPublishedSelect},
+                ${isMockTestSelect}
             FROM tests t
             WHERE t.id = $1
         `, [id]);
@@ -242,54 +257,54 @@ router.get('/:id', verifyAdmin, async (req, res) => {
             }
         }
 
-        // DISABLED: Fetch coding questions for this test
-        // let codingQuestions = [];
-        // try {
-        //     const codingQuestionsResult = await pool.query(`
-        //         SELECT * FROM coding_questions 
-        //         WHERE test_id = $1 
-        //         ORDER BY question_order ASC, id ASC
-        //     `, [id]);
+        // Fetch coding questions for this test
+        let codingQuestions = [];
+        try {
+            const codingQuestionsResult = await pool.query(`
+                SELECT * FROM coding_questions 
+                WHERE test_id = $1 
+                ORDER BY question_order ASC, id ASC
+            `, [id]);
 
-        //     // Get test cases for each coding question
-        //     codingQuestions = await Promise.all(
-        //         codingQuestionsResult.rows.map(async (question) => {
-        //             const testCasesResult = await pool.query(`
-        //                 SELECT * FROM coding_test_cases 
-        //                 WHERE coding_question_id = $1 
-        //                 ORDER BY test_case_order ASC, id ASC
-        //             `, [question.id]);
+            // Get test cases for each coding question
+            codingQuestions = await Promise.all(
+                codingQuestionsResult.rows.map(async (question) => {
+                    const testCasesResult = await pool.query(`
+                        SELECT * FROM coding_test_cases 
+                        WHERE coding_question_id = $1 
+                        ORDER BY test_case_order ASC, id ASC
+                    `, [question.id]);
 
-        //             const publicTestCases = testCasesResult.rows
-        //                 .filter(tc => !tc.is_hidden)
-        //                 .map(tc => ({
-        //                     input: tc.input,
-        //                     output: tc.output,
-        //                     explanation: tc.explanation
-        //                 }));
+                    const publicTestCases = testCasesResult.rows
+                        .filter(tc => !tc.is_hidden)
+                        .map(tc => ({
+                            input: tc.input,
+                            output: tc.output,
+                            explanation: tc.explanation
+                        }));
 
-        //             const hiddenTestCases = testCasesResult.rows
-        //                 .filter(tc => tc.is_hidden)
-        //                 .map(tc => ({
-        //                     input: tc.input,
-        //                     output: tc.output
-        //                 }));
+                    const hiddenTestCases = testCasesResult.rows
+                        .filter(tc => tc.is_hidden)
+                        .map(tc => ({
+                            input: tc.input,
+                            output: tc.output
+                        }));
 
-        //             return {
-        //                 id: question.id,
-        //                 title: question.title,
-        //                 description: question.description,
-        //                 timeLimit: parseFloat(question.time_limit),
-        //                 memoryLimit: question.memory_limit,
-        //                 publicTestCases,
-        //                 hiddenTestCases
-        //             };
-        //         })
-        //     );
-        // } catch (error) {
-        //     console.error('Error fetching coding questions:', error);
-        //     // Continue without coding questions if table doesn't exist
-        // }
+                    return {
+                        id: question.id,
+                        title: question.title,
+                        description: question.description,
+                        timeLimit: parseFloat(question.time_limit),
+                        memoryLimit: question.memory_limit,
+                        publicTestCases,
+                        hiddenTestCases
+                    };
+                })
+            );
+        } catch (error) {
+            console.error('Error fetching coding questions:', error);
+            // Continue without coding questions if table doesn't exist
+        }
 
         res.json({
             success: true,
@@ -297,7 +312,7 @@ router.get('/:id', verifyAdmin, async (req, res) => {
                 ...test,
                 questions: questionsResult.rows,
                 jobRoles: jobRoles,
-                // codingQuestions: codingQuestions
+                codingQuestions: codingQuestions
             }
         });
     } catch (error) {
@@ -366,16 +381,12 @@ router.put('/:id/job-details', verifyAdmin, async (req, res) => {
         const { id } = req.params;
         const { job_role, description } = req.body;
 
-        if (!job_role || job_role.trim() === '') {
-            return res.status(400).json({
-                success: false,
-                message: 'Job role is required'
-            });
-        }
+        const normalizedJobRole = typeof job_role === 'string' ? job_role.trim() : '';
+        const normalizedDescription = typeof description === 'string' ? description.trim() : '';
 
         const result = await pool.query(
             'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3 RETURNING *',
-            [job_role.trim(), description ? description.trim() : '', id]
+            [normalizedJobRole, normalizedDescription, id]
         );
 
         if (result.rows.length === 0) {
@@ -426,13 +437,6 @@ router.put('/:id/details', verifyAdmin, async (req, res) => {
         console.log('End DateTime:', end_datetime);
 
         // Validation
-        if (!job_role || job_role.trim() === '') {
-            return res.status(400).json({
-                success: false,
-                message: 'Job role is required'
-            });
-        }
-
         if (duration && (duration < 1 || duration > 300)) {
             return res.status(400).json({
                 success: false,
@@ -469,37 +473,55 @@ router.put('/:id/details', verifyAdmin, async (req, res) => {
 
         // Get admin user from token
         const adminUser = req.user?.email || req.user?.username || 'admin';
+        const normalizedJobRole = typeof job_role === 'string' ? job_role.trim() : '';
+        const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+        const testColumns = await getTestsColumnSet();
 
-        // Update test metadata only (no questions modification)
-        const result = await pool.query(`
-            UPDATE tests 
-            SET 
-                job_role = $1, 
-                description = $2, 
-                duration = $3, 
-                max_attempts = $4, 
-                passing_percentage = $5, 
-                start_datetime = $6, 
-                end_datetime = $7,
-                updated_by = $9,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $8
-            RETURNING 
-                id, title, job_role, description, duration, max_attempts, passing_percentage,
-                start_datetime AT TIME ZONE 'Asia/Kolkata' as start_datetime,
-                end_datetime AT TIME ZONE 'Asia/Kolkata' as end_datetime,
-                status, created_at, created_by, updated_by, updated_at
-        `, [
-            job_role.trim(),
-            description ? description.trim() : '',
+        const setParts = [
+            'job_role = $1',
+            'description = $2',
+            'duration = $3',
+            'max_attempts = $4',
+            'passing_percentage = $5',
+            'start_datetime = $6',
+            'end_datetime = $7'
+        ];
+        const queryParams = [
+            normalizedJobRole,
+            normalizedDescription,
             parseInt(duration) || 60,
             parseInt(max_attempts) || 1,
             parseInt(passing_percentage) || 50,
             start_datetime || null,
-            end_datetime || null,
-            id,
-            adminUser
-        ]);
+            end_datetime || null
+        ];
+
+        if (testColumns.has('updated_by')) {
+            queryParams.push(adminUser);
+            setParts.push(`updated_by = $${queryParams.length}`);
+        }
+        if (testColumns.has('updated_at')) {
+            setParts.push('updated_at = CURRENT_TIMESTAMP');
+        }
+
+        queryParams.push(id);
+        const whereParamIndex = queryParams.length;
+
+        const createdByReturning = testColumns.has('created_by') ? 'created_by' : 'NULL::text as created_by';
+        const updatedByReturning = testColumns.has('updated_by') ? 'updated_by' : 'NULL::text as updated_by';
+        const updatedAtReturning = testColumns.has('updated_at') ? 'updated_at' : 'NULL::timestamp as updated_at';
+
+        // Update test metadata only (no questions modification)
+        const result = await pool.query(`
+            UPDATE tests 
+            SET ${setParts.join(', ')}
+            WHERE id = $${whereParamIndex}
+            RETURNING 
+                id, title, job_role, description, duration, max_attempts, passing_percentage,
+                start_datetime AT TIME ZONE 'Asia/Kolkata' as start_datetime,
+                end_datetime AT TIME ZONE 'Asia/Kolkata' as end_datetime,
+                status, created_at, ${createdByReturning}, ${updatedByReturning}, ${updatedAtReturning}
+        `, queryParams);
 
         console.log('✅ Test details updated successfully');
 
@@ -566,27 +588,34 @@ router.put('/:id', verifyAdmin, async (req, res) => {
             });
         }
 
+        const normalizedJobRoles = Array.isArray(jobRoles)
+            ? jobRoles
+                .map((role) => ({
+                    job_role: typeof role?.job_role === 'string' ? role.job_role.trim() : '',
+                    job_description: typeof role?.job_description === 'string' ? role.job_description.trim() : ''
+                }))
+                .filter((role) => role.job_role !== '' || role.job_description !== '')
+            : [];
+        const testColumns = await getTestsColumnSet();
+
         // Update test details
-        const defaultJobRole = jobRoles && jobRoles.length > 0 ? jobRoles[0].job_role : '';
-        const defaultJobDescription = jobRoles && jobRoles.length > 0 ? jobRoles[0].job_description : '';
+        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
+        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : '';
         
         // Get admin user from token
         const adminUser = req.user?.email || req.user?.username || 'admin';
         
-        await client.query(`
-            UPDATE tests 
-            SET title = $1, 
-                job_role = $2, 
-                description = $3, 
-                duration = $4, 
-                max_attempts = $5, 
-                passing_percentage = $6, 
-                start_datetime = $7, 
-                end_datetime = $8,
-                updated_by = $10,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $9
-        `, [
+        const setParts = [
+            'title = $1',
+            'job_role = $2',
+            'description = $3',
+            'duration = $4',
+            'max_attempts = $5',
+            'passing_percentage = $6',
+            'start_datetime = $7',
+            'end_datetime = $8'
+        ];
+        const queryParams = [
             testName,
             defaultJobRole,
             defaultJobDescription,
@@ -594,25 +623,36 @@ router.put('/:id', verifyAdmin, async (req, res) => {
             parseInt(maxAttempts) || 1,
             parseInt(passingPercentage) || 50,
             startDateTime || null,
-            endDateTime || null,
-            id,
-            adminUser
-        ]);
+            endDateTime || null
+        ];
+
+        if (testColumns.has('updated_by')) {
+            queryParams.push(adminUser);
+            setParts.push(`updated_by = $${queryParams.length}`);
+        }
+        if (testColumns.has('updated_at')) {
+            setParts.push('updated_at = CURRENT_TIMESTAMP');
+        }
+
+        queryParams.push(id);
+        const whereParamIndex = queryParams.length;
+
+        await client.query(`
+            UPDATE tests 
+            SET ${setParts.join(', ')}
+            WHERE id = $${whereParamIndex}
+        `, queryParams);
 
         // Update job roles
-        if (jobRoles && jobRoles.length > 0) {
-            // Delete existing job roles
-            await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [id]);
-
-            // Insert new job roles
-            for (let i = 0; i < jobRoles.length; i++) {
-                const role = jobRoles[i];
-                await client.query(`
-                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (test_id, job_role) DO NOTHING
-                `, [id, role.job_role, role.job_description || '', i === 0]);
-            }
+        // Delete existing job roles and insert normalized non-empty roles
+        await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [id]);
+        for (let i = 0; i < normalizedJobRoles.length; i++) {
+            const role = normalizedJobRoles[i];
+            await client.query(`
+                INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (test_id, job_role) DO NOTHING
+            `, [id, role.job_role, role.job_description, i === 0]);
         }
 
         // Update questions if provided
@@ -887,25 +927,40 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
 
         // Get admin user from token
         const adminUser = req.user?.email || req.user?.username || 'admin';
+        const testColumns = await getTestsColumnSet();
 
-        // Create new test with same settings but draft status
-        const newTest = await client.query(`
-            INSERT INTO tests (
-                title, description, duration, max_attempts, 
-                start_datetime, end_datetime, status, passing_percentage, created_by
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7, $8)
-            RETURNING *
-        `, [
+        const insertColumns = [
+            'title',
+            'description',
+            'duration',
+            'max_attempts',
+            'start_datetime',
+            'end_datetime',
+            'status',
+            'passing_percentage'
+        ];
+        const insertValues = [
             new_title.trim(),
             test.description,
             test.duration,
             test.max_attempts,
             test.start_datetime,
             test.end_datetime,
-            test.passing_percentage || 50,
-            adminUser
-        ]);
+            'draft',
+            test.passing_percentage || 50
+        ];
+        if (testColumns.has('created_by')) {
+            insertColumns.push('created_by');
+            insertValues.push(adminUser);
+        }
+        const insertPlaceholders = insertValues.map((_, i) => `$${i + 1}`).join(', ');
+
+        // Create new test with same settings but draft status
+        const newTest = await client.query(`
+            INSERT INTO tests (${insertColumns.join(', ')})
+            VALUES (${insertPlaceholders})
+            RETURNING *
+        `, insertValues);
 
         const newTestId = newTest.rows[0].id;
         console.log(`[CLONE TEST] Created new test with ID: ${newTestId}`);
@@ -1012,8 +1067,8 @@ router.post('/assign', verifyAdmin, async (req, res) => {
         // If all students already have this test assigned
         if (newAssignmentIds.length === 0) {
             await client.query('ROLLBACK');
-            return res.status(200).json({
-                success: true,
+            return res.status(400).json({
+                success: false,
                 message: student_ids.length === 1 
                     ? 'This test is already assigned to this student'
                     : `All ${student_ids.length} selected student(s) already have this test assigned`,
@@ -1146,12 +1201,21 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
         const { testId } = req.params;
         const { job_roles } = req.body;
 
-        if (!job_roles || !Array.isArray(job_roles) || job_roles.length === 0) {
+        if (job_roles !== undefined && !Array.isArray(job_roles)) {
             return res.status(400).json({
                 success: false,
-                message: 'job_roles array is required'
+                message: 'job_roles must be an array when provided'
             });
         }
+
+        const normalizedJobRoles = Array.isArray(job_roles)
+            ? job_roles
+                .map((role) => ({
+                    job_role: typeof role?.job_role === 'string' ? role.job_role.trim() : '',
+                    job_description: typeof role?.job_description === 'string' ? role.job_description.trim() : ''
+                }))
+                .filter((role) => role.job_role !== '' || role.job_description !== '')
+            : [];
 
         // Verify test exists
         const testCheck = await client.query('SELECT id FROM tests WHERE id = $1', [testId]);
@@ -1181,19 +1245,25 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
         await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
 
         // Insert new job roles
-        for (let i = 0; i < job_roles.length; i++) {
-            const role = job_roles[i];
+        for (let i = 0; i < normalizedJobRoles.length; i++) {
+            const role = normalizedJobRoles[i];
             await client.query(`
                 INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
                 VALUES ($1, $2, $3, $4)
-            `, [testId, role.job_role, role.job_description || '', i === 0]);
+                ON CONFLICT (test_id, job_role) DO NOTHING
+            `, [testId, role.job_role, role.job_description, i === 0]);
         }
 
         // Update the default job role in tests table for backward compatibility
-        if (job_roles.length > 0) {
+        if (normalizedJobRoles.length > 0) {
             await client.query(
                 'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3',
-                [job_roles[0].job_role, job_roles[0].job_description || '', testId]
+                [normalizedJobRoles[0].job_role, normalizedJobRoles[0].job_description, testId]
+            );
+        } else {
+            await client.query(
+                'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3',
+                ['', '', testId]
             );
         }
 
@@ -1201,8 +1271,8 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
 
         res.json({
             success: true,
-            message: `Successfully added ${job_roles.length} job role(s)`,
-            count: job_roles.length
+            message: `Successfully updated ${normalizedJobRoles.length} job role(s)`,
+            count: normalizedJobRoles.length
         });
     } catch (error) {
         await client.query('ROLLBACK');
