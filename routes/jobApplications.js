@@ -572,8 +572,16 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
              INNER JOIN students s ON ja.student_id = s.id
              LEFT JOIN job_opening_tests jot ON ja.job_opening_id = jot.job_opening_id
              LEFT JOIN tests t ON jot.test_id = t.id
-             LEFT JOIN test_attempts ta ON ta.test_id = t.id 
-                AND ta.student_id = s.id 
+             -- Join only the single latest attempt for this student+test+application
+             LEFT JOIN LATERAL (
+                SELECT obtained_marks, total_marks, percentage, submitted_at
+                FROM test_attempts
+                WHERE test_id = t.id
+                  AND student_id = s.id
+                  AND job_application_id = ja.id
+                ORDER BY submitted_at DESC
+                LIMIT 1
+             ) ta ON true
              WHERE ja.job_opening_id = $1
              ORDER BY s.full_name ASC, t.title ASC`,
             [jobId]
