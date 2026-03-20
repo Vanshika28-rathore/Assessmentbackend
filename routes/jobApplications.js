@@ -485,6 +485,16 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
 
         if (totalJobTests > 0 && appsToCheck.rows.length > 0) {
             for (const app of appsToCheck.rows) {
+                // Check how many tests this student is actually assigned to for this job
+                const assignedTestsRes = await query(
+                    `SELECT COUNT(DISTINCT jot.test_id) AS cnt
+                     FROM job_opening_tests jot
+                     INNER JOIN test_assignments ta ON ta.test_id = jot.test_id AND ta.student_id = $1 AND ta.is_active = true
+                     WHERE jot.job_opening_id = $2`,
+                    [app.student_id, jobId]
+                );
+                const assignedTests = parseInt(assignedTestsRes.rows[0]?.cnt) || totalJobTests;
+
                 const completedRes = await query(
                     `SELECT ta.percentage, t.passing_percentage
                      FROM test_attempts ta
@@ -492,7 +502,7 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
                      WHERE ta.job_application_id = $1 AND ta.student_id = $2`,
                     [app.id, app.student_id]
                 );
-                if (completedRes.rows.length < totalJobTests) continue;
+                if (completedRes.rows.length < assignedTests) continue;
 
                 const allPassed = completedRes.rows.every(r => parseFloat(r.percentage) >= parseFloat(r.passing_percentage));
                 const violRes = await query(
@@ -658,20 +668,29 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
         );
         const totalJobTests = parseInt(totalTestsRes.rows[0]?.cnt) || 0;
 
-        const statusUpdates = []; // track what we changed so we can update the rows
+        const statusUpdates = [];
 
         if (totalJobTests > 0) {
             for (const [appId, app] of appMap.entries()) {
-                // Only process applications that have completed all tests
+                // All tests linked to this job that this student is actually assigned to
+                const assignedTestsRes = await query(
+                    `SELECT COUNT(DISTINCT jot.test_id) AS cnt
+                     FROM job_opening_tests jot
+                     INNER JOIN test_assignments ta ON ta.test_id = jot.test_id AND ta.student_id = $1 AND ta.is_active = true
+                     WHERE jot.job_opening_id = $2`,
+                    [app.student_id, jobId]
+                );
+                const assignedTests = parseInt(assignedTestsRes.rows[0]?.cnt) || totalJobTests;
+
+                // Student must complete all tests they are assigned to
                 const completedTests = app.tests.filter(t => t.submitted_at !== null);
-                if (completedTests.length < totalJobTests) continue;
+                if (completedTests.length < assignedTests) continue;
 
                 const allPassed = completedTests.every(t => t.passed === true || t.passed === 'true');
                 const isFlagged = app.total_job_violations > 5;
                 const correctStatus = (allPassed && !isFlagged) ? 'shortlisted' : 'rejected';
                 const avgScore = completedTests.reduce((s, t) => s + parseFloat(t.percentage || 0), 0) / completedTests.length;
 
-                // Only update if status is wrong — also rechecks wrongly-rejected students
                 if (app.current_status !== correctStatus) {
                     await query(
                         `UPDATE job_applications
@@ -684,7 +703,6 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
                         [correctStatus, (allPassed && !isFlagged), avgScore, appId]
                     );
                     statusUpdates.push({ appId, old: app.current_status, new: correctStatus });
-                    // Update the in-memory map so the response reflects the fix
                     app.current_status = correctStatus;
                 }
             }

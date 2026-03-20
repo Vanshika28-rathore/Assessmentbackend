@@ -48,7 +48,8 @@ WHERE ja.status = 'assessment_completed'
 
 -- ============================================================
 -- STEP 4: Fix students stuck at assessment_assigned/submitted/screening
--- who have completed all tests
+-- who have completed all tests ASSIGNED TO THEM
+-- Uses per-student assigned test count, not total job tests
 -- ============================================================
 UPDATE job_applications ja
 SET status = CASE
@@ -91,18 +92,26 @@ test_completed_at = CURRENT_TIMESTAMP,
 updated_at = CURRENT_TIMESTAMP
 WHERE ja.status IN ('assessment_assigned', 'submitted', 'screening')
   AND (
+      -- Student completed all tests assigned to them for this job
       SELECT COUNT(DISTINCT ta.test_id)
       FROM test_attempts ta
       WHERE ta.job_application_id = ja.id
         AND ta.student_id = ja.student_id
   ) >= (
-      SELECT COUNT(*)
+      -- Count only tests this student is actually assigned to
+      SELECT COUNT(DISTINCT jot.test_id)
       FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
       WHERE jot.job_opening_id = ja.job_opening_id
   )
   AND (
-      SELECT COUNT(*)
+      SELECT COUNT(DISTINCT jot.test_id)
       FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
       WHERE jot.job_opening_id = ja.job_opening_id
   ) > 0;
 
@@ -116,9 +125,7 @@ WHERE status IN ('submitted', 'screening');
 
 -- ============================================================
 -- STEP 6: THE KEY FIX — recalculate ALL rejected students from scratch
--- using live test_attempts + live violation counts.
--- This catches: wrong passed_assessment, violations counted globally,
--- status set before violations arrived, assessment_completed fallback bug.
+-- using live test_attempts + live violation counts + per-student assigned tests
 -- ============================================================
 UPDATE job_applications ja
 SET status = 'shortlisted',
@@ -131,16 +138,28 @@ SET status = 'shortlisted',
     ),
     updated_at = CURRENT_TIMESTAMP
 WHERE ja.status = 'rejected'
-  -- Has completed all linked tests
   AND (
+      -- Completed all tests assigned to them
       SELECT COUNT(DISTINCT ta.test_id)
       FROM test_attempts ta
       WHERE ta.job_application_id = ja.id
         AND ta.student_id = ja.student_id
   ) >= (
-      SELECT COUNT(*) FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
   )
-  AND (SELECT COUNT(*) FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id) > 0
+  AND (
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
+  ) > 0
   -- Actually passed all tests
   AND COALESCE(
       (
@@ -170,8 +189,8 @@ GROUP BY status
 ORDER BY count DESC;
 
 -- ============================================================
--- STEP 8: Diagnostic — show all students with their actual pass/violation status
--- Run this to verify correctness before and after
+-- STEP 8: Full diagnostic — shows every student with actual pass/violation status
+-- Run this to see exactly who should be shortlisted vs rejected
 -- ============================================================
 SELECT
     ja.id AS application_id,
@@ -190,7 +209,12 @@ SELECT
        AND pv.test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id)
     ) AS job_violation_count,
     (SELECT COUNT(DISTINCT ta.test_id) FROM test_attempts ta WHERE ta.job_application_id = ja.id) AS tests_completed,
-    (SELECT COUNT(*) FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id) AS tests_required
+    (SELECT COUNT(DISTINCT jot.test_id)
+     FROM job_opening_tests jot
+     INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+         AND tasgn.student_id = ja.student_id AND tasgn.is_active = true
+     WHERE jot.job_opening_id = ja.job_opening_id
+    ) AS tests_assigned_to_student
 FROM job_applications ja
 INNER JOIN students s ON s.id = ja.student_id
 ORDER BY ja.status, s.full_name;
