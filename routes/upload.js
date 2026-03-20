@@ -14,6 +14,65 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
+const DEFAULT_JOB_ROLE = 'General Assessment Candidate';
+const DEFAULT_JOB_DESCRIPTION = 'This assessment evaluates candidate readiness across core technical and problem-solving skills relevant to the role.';
+
+let settingsColumnsEnsured = false;
+
+async function ensureDefaultTestSettingsColumns(db = pool) {
+    if (settingsColumnsEnsured) return;
+
+    await db.query(`
+        ALTER TABLE system_settings
+        ADD COLUMN IF NOT EXISTS default_test_job_role TEXT,
+        ADD COLUMN IF NOT EXISTS default_test_job_description TEXT
+    `);
+
+    settingsColumnsEnsured = true;
+}
+
+async function getConfiguredDefaultJobDetails(db = pool) {
+    try {
+        await ensureDefaultTestSettingsColumns(db);
+        const result = await db.query(
+            'SELECT default_test_job_role, default_test_job_description FROM system_settings WHERE id = 1'
+        );
+
+        const row = result.rows[0] || {};
+        return {
+            job_role: typeof row.default_test_job_role === 'string' ? row.default_test_job_role.trim() || DEFAULT_JOB_ROLE : DEFAULT_JOB_ROLE,
+            job_description: typeof row.default_test_job_description === 'string' ? row.default_test_job_description.trim() || DEFAULT_JOB_DESCRIPTION : DEFAULT_JOB_DESCRIPTION
+        };
+    } catch (error) {
+        return {
+            job_role: DEFAULT_JOB_ROLE,
+            job_description: DEFAULT_JOB_DESCRIPTION
+        };
+    }
+}
+
+const applyDefaultJobDetails = (jobRole, jobDescription, defaults = { job_role: DEFAULT_JOB_ROLE, job_description: DEFAULT_JOB_DESCRIPTION }) => {
+    const normalizedRole = typeof jobRole === 'string' ? jobRole.trim() : '';
+    const normalizedDescription = typeof jobDescription === 'string' ? jobDescription.trim() : '';
+
+    return {
+        job_role: normalizedRole || defaults.job_role,
+        job_description: normalizedDescription || defaults.job_description
+    };
+};
+
+const getPrimaryJobDetails = (normalizedJobRoles, fallbackDescription = '', defaults = { job_role: DEFAULT_JOB_ROLE, job_description: DEFAULT_JOB_DESCRIPTION }) => {
+    const firstRole = Array.isArray(normalizedJobRoles) && normalizedJobRoles.length > 0
+        ? normalizedJobRoles[0]
+        : null;
+
+    return applyDefaultJobDetails(
+        firstRole?.job_role,
+        firstRole?.job_description || fallbackDescription,
+        defaults
+    );
+};
+
 const normalizeJobRoles = (jobRoles) => {
     if (!Array.isArray(jobRoles)) return [];
     return jobRoles
@@ -115,8 +174,8 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
         }
 
         // 1. Create Test with additional details
-        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
-        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
+        const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
         
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
@@ -398,8 +457,8 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         }
 
         // Create test with additional details
-        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
-        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
+        const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
         
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
@@ -575,8 +634,8 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
         await client.query('BEGIN');
 
         // Update test details
-        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
-        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : testDescription || '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
+        const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
         
         await client.query(
             `UPDATE tests 

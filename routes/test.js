@@ -5,6 +5,53 @@ const { pool } = require('../config/db');
 // const { cacheMiddleware } = require('../middleware/cache'); // DISABLED: Redis
 const verifyAdmin = require('../middleware/verifyAdmin');
 
+const DEFAULT_JOB_ROLE = 'General Assessment Candidate';
+const DEFAULT_JOB_DESCRIPTION = 'This assessment evaluates candidate readiness across core technical and problem-solving skills relevant to the role.';
+
+let settingsColumnsEnsured = false;
+
+async function ensureDefaultTestSettingsColumns(db = pool) {
+    if (settingsColumnsEnsured) return;
+
+    await db.query(`
+        ALTER TABLE system_settings
+        ADD COLUMN IF NOT EXISTS default_test_job_role TEXT,
+        ADD COLUMN IF NOT EXISTS default_test_job_description TEXT
+    `);
+
+    settingsColumnsEnsured = true;
+}
+
+async function getConfiguredDefaultJobDetails(db = pool) {
+    try {
+        await ensureDefaultTestSettingsColumns(db);
+        const result = await db.query(
+            'SELECT default_test_job_role, default_test_job_description FROM system_settings WHERE id = 1'
+        );
+
+        const row = result.rows[0] || {};
+        return {
+            job_role: typeof row.default_test_job_role === 'string' ? row.default_test_job_role.trim() || DEFAULT_JOB_ROLE : DEFAULT_JOB_ROLE,
+            job_description: typeof row.default_test_job_description === 'string' ? row.default_test_job_description.trim() || DEFAULT_JOB_DESCRIPTION : DEFAULT_JOB_DESCRIPTION
+        };
+    } catch (error) {
+        return {
+            job_role: DEFAULT_JOB_ROLE,
+            job_description: DEFAULT_JOB_DESCRIPTION
+        };
+    }
+}
+
+function applyDefaultJobDetails(jobRole, jobDescription, defaults = { job_role: DEFAULT_JOB_ROLE, job_description: DEFAULT_JOB_DESCRIPTION }) {
+    const normalizedRole = typeof jobRole === 'string' ? jobRole.trim() : '';
+    const normalizedDescription = typeof jobDescription === 'string' ? jobDescription.trim() : '';
+
+    return {
+        job_role: normalizedRole || defaults.job_role,
+        job_description: normalizedDescription || defaults.job_description
+    };
+}
+
 async function getTestsColumnSet() {
     const result = await pool.query(`
         SELECT column_name
@@ -381,8 +428,11 @@ router.put('/:id/job-details', verifyAdmin, async (req, res) => {
         const { id } = req.params;
         const { job_role, description } = req.body;
 
-        const normalizedJobRole = typeof job_role === 'string' ? job_role.trim() : '';
-        const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(pool);
+        const {
+            job_role: normalizedJobRole,
+            job_description: normalizedDescription
+        } = applyDefaultJobDetails(job_role, description, configuredDefaults);
 
         const result = await pool.query(
             'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3 RETURNING *',
@@ -473,8 +523,11 @@ router.put('/:id/details', verifyAdmin, async (req, res) => {
 
         // Get admin user from token
         const adminUser = req.user?.email || req.user?.username || 'admin';
-        const normalizedJobRole = typeof job_role === 'string' ? job_role.trim() : '';
-        const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(pool);
+        const {
+            job_role: normalizedJobRole,
+            job_description: normalizedDescription
+        } = applyDefaultJobDetails(job_role, description, configuredDefaults);
         const testColumns = await getTestsColumnSet();
 
         const setParts = [
@@ -599,8 +652,13 @@ router.put('/:id', verifyAdmin, async (req, res) => {
         const testColumns = await getTestsColumnSet();
 
         // Update test details
-        const defaultJobRole = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_role : '';
-        const defaultJobDescription = normalizedJobRoles.length > 0 ? normalizedJobRoles[0].job_description : '';
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
+        const {
+            job_role: defaultJobRole,
+            job_description: defaultJobDescription
+        } = normalizedJobRoles.length > 0
+            ? applyDefaultJobDetails(normalizedJobRoles[0].job_role, normalizedJobRoles[0].job_description, configuredDefaults)
+            : applyDefaultJobDetails('', '', configuredDefaults);
         
         // Get admin user from token
         const adminUser = req.user?.email || req.user?.username || 'admin';
@@ -929,8 +987,15 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
         const adminUser = req.user?.email || req.user?.username || 'admin';
         const testColumns = await getTestsColumnSet();
 
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
+        const {
+            job_role: clonedJobRole,
+            job_description: clonedJobDescription
+        } = applyDefaultJobDetails(test.job_role, test.description, configuredDefaults);
+
         const insertColumns = [
             'title',
+            'job_role',
             'description',
             'duration',
             'max_attempts',
@@ -941,7 +1006,8 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
         ];
         const insertValues = [
             new_title.trim(),
-            test.description,
+            clonedJobRole,
+            clonedJobDescription,
             test.duration,
             test.max_attempts,
             test.start_datetime,
@@ -990,6 +1056,38 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
                 question.correct_option,
                 question.marks
             ]);
+        }
+
+        // Clone job roles. Ensure at least one non-empty default role exists in the cloned test.
+        let originalJobRoles = [];
+        try {
+            const rolesResult = await client.query(`
+                SELECT job_role, job_description, is_default
+                FROM test_job_roles
+                WHERE test_id = $1
+                ORDER BY is_default DESC, id ASC
+            `, [id]);
+            originalJobRoles = rolesResult.rows;
+        } catch (err) {
+            originalJobRoles = [];
+        }
+
+        if (originalJobRoles.length > 0) {
+            for (let i = 0; i < originalJobRoles.length; i++) {
+                const role = originalJobRoles[i];
+                const normalizedRole = applyDefaultJobDetails(role.job_role, role.job_description, configuredDefaults);
+                await client.query(`
+                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (test_id, job_role) DO NOTHING
+                `, [newTestId, normalizedRole.job_role, normalizedRole.job_description, i === 0]);
+            }
+        } else {
+            await client.query(`
+                INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                VALUES ($1, $2, $3, true)
+                ON CONFLICT (test_id, job_role) DO NOTHING
+            `, [newTestId, clonedJobRole, clonedJobDescription]);
         }
 
         await client.query('COMMIT');
@@ -1208,6 +1306,7 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
             });
         }
 
+        const configuredDefaults = await getConfiguredDefaultJobDetails(client);
         const normalizedJobRoles = Array.isArray(job_roles)
             ? job_roles
                 .map((role) => ({
@@ -1215,7 +1314,15 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
                     job_description: typeof role?.job_description === 'string' ? role.job_description.trim() : ''
                 }))
                 .filter((role) => role.job_role !== '' || role.job_description !== '')
+                .map((role) => applyDefaultJobDetails(role.job_role, role.job_description, configuredDefaults))
             : [];
+
+        const {
+            job_role: defaultJobRole,
+            job_description: defaultJobDescription
+        } = normalizedJobRoles.length > 0
+            ? applyDefaultJobDetails(normalizedJobRoles[0].job_role, normalizedJobRoles[0].job_description, configuredDefaults)
+            : applyDefaultJobDetails('', '', configuredDefaults);
 
         // Verify test exists
         const testCheck = await client.query('SELECT id FROM tests WHERE id = $1', [testId]);
@@ -1255,17 +1362,10 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
         }
 
         // Update the default job role in tests table for backward compatibility
-        if (normalizedJobRoles.length > 0) {
-            await client.query(
-                'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3',
-                [normalizedJobRoles[0].job_role, normalizedJobRoles[0].job_description, testId]
-            );
-        } else {
-            await client.query(
-                'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3',
-                ['', '', testId]
-            );
-        }
+        await client.query(
+            'UPDATE tests SET job_role = $1, description = $2 WHERE id = $3',
+            [defaultJobRole, defaultJobDescription, testId]
+        );
 
         await client.query('COMMIT');
 
