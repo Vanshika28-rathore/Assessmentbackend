@@ -1162,12 +1162,12 @@ router.post('/assign', verifyAdmin, async (req, res) => {
         const alreadyAssignedIds = existingAssignments.rows.map(row => row.student_id);
         const newAssignmentIds = student_ids.filter(id => !alreadyAssignedIds.includes(id));
 
-        // If all students already have this test assigned
+        // If all students already have this test assigned — return 200 with info message
         if (newAssignmentIds.length === 0) {
             await client.query('ROLLBACK');
-            return res.status(400).json({
-                success: false,
-                message: student_ids.length === 1 
+            return res.json({
+                success: true,
+                message: student_ids.length === 1
                     ? 'This test is already assigned to this student'
                     : `All ${student_ids.length} selected student(s) already have this test assigned`,
                 already_assigned: student_ids.length,
@@ -1175,31 +1175,27 @@ router.post('/assign', verifyAdmin, async (req, res) => {
             });
         }
 
-        // Insert assignments only for students who don't have it yet
-        const insertPromises = newAssignmentIds.map(student_id =>
+        // Insert only new assignments
+        await Promise.all(newAssignmentIds.map(student_id =>
             client.query(`
                 INSERT INTO test_assignments (test_id, student_id, is_active)
                 VALUES ($1, $2, true)
+                ON CONFLICT (test_id, student_id) DO UPDATE SET is_active = true, assigned_at = CURRENT_TIMESTAMP
             `, [test_id, student_id])
-        );
+        ));
 
-        await Promise.all(insertPromises);
         await client.query('COMMIT');
 
         // Invalidate cache
         // await cache.delPattern('cache:*'); // DISABLED: Redis
 
-        // Build response message
-        let message = '';
-        if (alreadyAssignedIds.length > 0) {
-            message = `${alreadyAssignedIds.length} student(s) already have this test assigned. Assigning to ${newAssignmentIds.length} student(s).`;
-        } else {
-            message = `Test assigned to ${newAssignmentIds.length} student(s)`;
-        }
+        const message = alreadyAssignedIds.length > 0
+            ? `${alreadyAssignedIds.length} already assigned. Test assigned to ${newAssignmentIds.length} new student(s).`
+            : `Test assigned to ${newAssignmentIds.length} student(s)`;
 
         res.json({
             success: true,
-            message: message,
+            message,
             newly_assigned: newAssignmentIds.length,
             already_assigned: alreadyAssignedIds.length,
             total_requested: student_ids.length
