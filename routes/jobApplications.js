@@ -467,14 +467,64 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
     const { jobId } = req.params;
 
     try {
+        // First auto-correct any completed applications with wrong status
+        // Covers both stuck-in-progress AND wrongly-rejected students
+        const appsToCheck = await query(
+            `SELECT ja.id, ja.student_id, ja.status
+             FROM job_applications ja
+             WHERE ja.job_opening_id = $1
+               AND ja.status IN ('assessment_assigned', 'submitted', 'screening', 'assessment_completed', 'rejected')`,
+            [jobId]
+        );
+
+        const totalTestsRes = await query(
+            `SELECT COUNT(*) AS cnt FROM job_opening_tests WHERE job_opening_id = $1`,
+            [jobId]
+        );
+        const totalJobTests = parseInt(totalTestsRes.rows[0]?.cnt) || 0;
+
+        if (totalJobTests > 0 && appsToCheck.rows.length > 0) {
+            for (const app of appsToCheck.rows) {
+                const completedRes = await query(
+                    `SELECT ta.percentage, t.passing_percentage
+                     FROM test_attempts ta
+                     INNER JOIN tests t ON ta.test_id = t.id
+                     WHERE ta.job_application_id = $1 AND ta.student_id = $2`,
+                    [app.id, app.student_id]
+                );
+                if (completedRes.rows.length < totalJobTests) continue;
+
+                const allPassed = completedRes.rows.every(r => parseFloat(r.percentage) >= parseFloat(r.passing_percentage));
+                const violRes = await query(
+                    `SELECT COUNT(*) AS cnt FROM proctoring_violations pv
+                     WHERE pv.student_id = $1::varchar
+                       AND pv.test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = $2)`,
+                    [app.student_id, jobId]
+                );
+                const isFlagged = parseInt(violRes.rows[0]?.cnt) > 5;
+                const correctStatus = (allPassed && !isFlagged) ? 'shortlisted' : 'rejected';
+                const avgScore = completedRes.rows.reduce((s, r) => s + parseFloat(r.percentage || 0), 0) / completedRes.rows.length;
+
+                if (app.status !== correctStatus) {
+                    await query(
+                        `UPDATE job_applications
+                         SET status = $1, passed_assessment = $2, assessment_score = $3,
+                             test_completed_at = COALESCE(test_completed_at, CURRENT_TIMESTAMP),
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE id = $4`,
+                        [correctStatus, (allPassed && !isFlagged), avgScore, app.id]
+                    );
+                }
+            }
+        }
+
+        // Now fetch fresh stats
         const stats = await query(
             `SELECT 
                 COUNT(*) AS total_applications,
                 COUNT(*) FILTER (WHERE status IN ('submitted', 'screening', 'assessment_assigned', 'assessment_completed')) AS in_progress,
                 COUNT(*) FILTER (WHERE status = 'shortlisted') AS shortlisted,
                 COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
-                -- Count rows that will appear in Assessment Results tab:
-                -- distinct (student, test) pairs that have a submitted attempt linked to this job
                 (
                     SELECT COUNT(*)
                     FROM (
@@ -509,12 +559,14 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
 
 /**
  * GET /api/job-applications/admin/job/:jobId/test-results
- * Get detailed test results with violations for all applicants of a job
+ * Get detailed test results with violations for all applicants of a job.
+ * Also auto-corrects application statuses based on live violation counts.
  */
 router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
     const { jobId } = req.params;
 
     try {
+        // ── Step 1: Fetch raw results ────────────────────────────────────────
         const results = await query(
             `SELECT 
                 ja.id AS application_id,
@@ -530,61 +582,37 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
                 ta.submitted_at,
                 t.passing_percentage,
                 CASE 
-                    WHEN ta.percentage >= t.passing_percentage THEN true
+                    WHEN ta.percentage IS NOT NULL AND ta.percentage >= t.passing_percentage THEN true
                     ELSE false
                 END AS passed,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id
-                     AND pv.violation_type = 'no_face'), 
-                    0
-                ) AS no_face_count,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id
-                     AND pv.violation_type = 'multi_face'), 
-                    0
-                ) AS multi_face_count,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id
-                     AND pv.violation_type = 'phone_detected'), 
-                    0
-                ) AS phone_count,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id
-                     AND pv.violation_type = 'noise_detected'), 
-                    0
-                ) AS noise_count,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id
-                     AND pv.violation_type = 'voice_detected'), 
-                    0
-                ) AS voice_count,
-                COALESCE(
-                    (SELECT COUNT(*) 
-                     FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar 
-                     AND pv.test_id = t.id), 
-                    0
-                ) AS violation_count
+                -- Violations scoped to THIS test only (for display columns)
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
+                     AND pv.violation_type = 'no_face'), 0) AS no_face_count,
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
+                     AND pv.violation_type = 'multi_face'), 0) AS multi_face_count,
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
+                     AND pv.violation_type = 'phone_detected'), 0) AS phone_count,
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
+                     AND pv.violation_type = 'noise_detected'), 0) AS noise_count,
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
+                     AND pv.violation_type = 'voice_detected'), 0) AS voice_count,
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id), 0) AS violation_count,
+                -- Total violations across ALL of this job's tests (for shortlist decision)
+                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
+                     WHERE pv.student_id = s.id::varchar
+                       AND pv.test_id IN (
+                           SELECT test_id FROM job_opening_tests WHERE job_opening_id = $1
+                       )), 0) AS total_job_violations
              FROM job_applications ja
              INNER JOIN students s ON ja.student_id = s.id
              LEFT JOIN job_opening_tests jot ON ja.job_opening_id = jot.job_opening_id
              LEFT JOIN tests t ON jot.test_id = t.id
-             -- Join only the single latest attempt for this student+test+application
              LEFT JOIN LATERAL (
                 SELECT obtained_marks, total_marks, percentage, submitted_at
                 FROM test_attempts
@@ -599,9 +627,85 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
             [jobId]
         );
 
+        // ── Step 2: Auto-correct statuses for completed applications ─────────
+        // Group by application_id to check if all tests are done
+        const appMap = new Map();
+        for (const row of results.rows) {
+            if (!appMap.has(row.application_id)) {
+                appMap.set(row.application_id, {
+                    application_id: row.application_id,
+                    student_id: row.student_id,
+                    current_status: row.status,
+                    total_job_violations: parseInt(row.total_job_violations) || 0,
+                    tests: []
+                });
+            }
+            if (row.test_id !== null) {
+                appMap.get(row.application_id).tests.push({
+                    test_id: row.test_id,
+                    submitted_at: row.submitted_at,
+                    percentage: row.percentage,
+                    passing_percentage: row.passing_percentage,
+                    passed: row.passed
+                });
+            }
+        }
+
+        // Get total tests linked to this job
+        const totalTestsRes = await query(
+            `SELECT COUNT(*) AS cnt FROM job_opening_tests WHERE job_opening_id = $1`,
+            [jobId]
+        );
+        const totalJobTests = parseInt(totalTestsRes.rows[0]?.cnt) || 0;
+
+        const statusUpdates = []; // track what we changed so we can update the rows
+
+        if (totalJobTests > 0) {
+            for (const [appId, app] of appMap.entries()) {
+                // Only process applications that have completed all tests
+                const completedTests = app.tests.filter(t => t.submitted_at !== null);
+                if (completedTests.length < totalJobTests) continue;
+
+                const allPassed = completedTests.every(t => t.passed === true || t.passed === 'true');
+                const isFlagged = app.total_job_violations > 5;
+                const correctStatus = (allPassed && !isFlagged) ? 'shortlisted' : 'rejected';
+                const avgScore = completedTests.reduce((s, t) => s + parseFloat(t.percentage || 0), 0) / completedTests.length;
+
+                // Only update if status is wrong — also rechecks wrongly-rejected students
+                if (app.current_status !== correctStatus) {
+                    await query(
+                        `UPDATE job_applications
+                         SET status = $1,
+                             passed_assessment = $2,
+                             assessment_score = $3,
+                             test_completed_at = COALESCE(test_completed_at, CURRENT_TIMESTAMP),
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE id = $4`,
+                        [correctStatus, (allPassed && !isFlagged), avgScore, appId]
+                    );
+                    statusUpdates.push({ appId, old: app.current_status, new: correctStatus });
+                    // Update the in-memory map so the response reflects the fix
+                    app.current_status = correctStatus;
+                }
+            }
+        }
+
+        if (statusUpdates.length > 0) {
+            console.log(`[TEST_RESULTS] Auto-corrected ${statusUpdates.length} application statuses:`, statusUpdates);
+        }
+
+        // ── Step 3: Patch status in result rows to reflect corrections ───────
+        const correctedStatusMap = new Map(
+            Array.from(appMap.values()).map(a => [a.application_id, a.current_status])
+        );
+        const patchedRows = results.rows.map(row => ({
+            ...row,
+            status: correctedStatusMap.get(row.application_id) ?? row.status
+        }));
+
         res.json({
             success: true,
-            data: results.rows
+            data: patchedRows
         });
 
     } catch (error) {

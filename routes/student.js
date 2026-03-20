@@ -942,18 +942,19 @@ router.post('/submit-exam', async (req, res) => {
                     const totalViolations = parseInt(violationsCheck.rows[0]?.total_violations) || 0;
                     const isFlagged = totalViolations > 5;
 
-                    let newStatus = 'assessment_completed';
-                    let statusMessage = 'All tests completed';
+                    let newStatus;
+                    let statusMessage;
 
                     if (allTestsPassed && !isFlagged) {
                         newStatus = 'shortlisted';
                         statusMessage = 'Automatically shortlisted - passed all tests with clean proctoring record';
-                    } else if (anyTestFailed) {
+                    } else {
                         newStatus = 'rejected';
-                        statusMessage = 'Automatically rejected - failed one or more tests';
-                    } else if (isFlagged) {
-                        newStatus = 'rejected';
-                        statusMessage = `Automatically rejected - excessive proctoring violations (${totalViolations} violations detected)`;
+                        if (anyTestFailed) {
+                            statusMessage = 'Automatically rejected - failed one or more tests';
+                        } else {
+                            statusMessage = `Automatically rejected - excessive proctoring violations (${totalViolations} violations detected)`;
+                        }
                     }
 
                     const avgScore = testResultsCheck.rows.reduce((sum, row) => sum + parseFloat(row.student_percentage || 0), 0) / (testResultsCheck.rows.length || 1);
