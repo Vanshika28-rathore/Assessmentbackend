@@ -885,14 +885,14 @@ router.post('/submit-exam', async (req, res) => {
         // Update job application test_attempts and auto-update application status
         if (resolvedApplicationId) {
             await pool.query(`
-                INSERT INTO test_attempts (student_id, test_id, total_marks, obtained_marks, percentage, submitted_at)
-                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-                ON CONFLICT (student_id, test_id) DO UPDATE SET
+                INSERT INTO test_attempts (student_id, test_id, job_application_id, total_marks, obtained_marks, percentage, submitted_at)
+                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                ON CONFLICT (student_id, test_id, job_application_id) DO UPDATE SET
                     total_marks = EXCLUDED.total_marks,
                     obtained_marks = EXCLUDED.obtained_marks,
                     percentage = EXCLUDED.percentage,
                     submitted_at = CURRENT_TIMESTAMP
-            `, [studentId, testId, totalMarks, marksObtained, percentage]);
+            `, [studentId, testId, resolvedApplicationId, totalMarks, marksObtained, percentage]);
 
             try {
                 const totalTestsResult = await pool.query(`
@@ -952,13 +952,18 @@ router.post('/submit-exam', async (req, res) => {
                         statusMessage = `Automatically rejected - excessive proctoring violations (${totalViolations} violations detected)`;
                     }
 
+                    const avgScore = testResultsCheck.rows.reduce((sum, row) => sum + parseFloat(row.student_percentage || 0), 0) / (testResultsCheck.rows.length || 1);
+                    const passedAssessment = allTestsPassed && !isFlagged;
+
                     await pool.query(`
                         UPDATE job_applications
                         SET status = $1,
                             test_completed_at = CURRENT_TIMESTAMP,
-                            eligibility_notes = $2
-                        WHERE id = $3
-                    `, [newStatus, statusMessage, resolvedApplicationId]);
+                            eligibility_notes = $2,
+                            assessment_score = $3,
+                            passed_assessment = $4
+                        WHERE id = $5
+                    `, [newStatus, statusMessage, avgScore, passedAssessment, resolvedApplicationId]);
                 }
             } catch (updateError) {
                 console.error('Failed to update application status (non-critical):', updateError.message);
