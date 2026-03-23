@@ -244,7 +244,7 @@ router.get('/', verifyAdmin, async (req, res) => {
 router.get('/unread-count', verifyAdmin, async (req, res) => {
     try {
         const result = await pool.query(
-            "SELECT COUNT(*) FROM student_messages WHERE status = 'unread'"
+            "SELECT COUNT(*) FROM student_messages WHERE status = 'unread' AND sender_type = 'student'"
         );
 
         res.json({
@@ -560,6 +560,17 @@ router.patch('/conversation/:studentId/read', verifyAdmin, async (req, res) => {
             [studentId]
         );
 
+        // Emit updated unread count to all admins
+        const io = req.app.get('io');
+        if (io) {
+            const countResult = await pool.query(
+                "SELECT COUNT(*) FROM student_messages WHERE status = 'unread' AND sender_type = 'student'"
+            );
+            io.to('admin-support-room').emit('support:unread-count-update', {
+                count: parseInt(countResult.rows[0].count)
+            });
+        }
+
         res.json({
             success: true,
             updated: result.rowCount
@@ -582,9 +593,15 @@ router.post('/mark-all-read', verifyAdmin, async (req, res) => {
         const result = await pool.query(
             `UPDATE student_messages 
              SET status = 'read', read_at = NOW()
-             WHERE status = 'unread'
+             WHERE status = 'unread' AND sender_type = 'student'
              RETURNING id`
         );
+
+        // Notify all admin sockets that unread count is now 0
+        const io = req.app.get('io');
+        if (io) {
+            io.to('admin-support-room').emit('support:unread-count-update', { count: 0 });
+        }
 
         res.json({
             success: true,
