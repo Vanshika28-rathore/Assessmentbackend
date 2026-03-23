@@ -737,10 +737,10 @@ router.post('/:id/reply', verifyAdmin, upload.single('image'), async (req, res) 
         const { id } = req.params;
         const { message } = req.body;
 
-        if (!message || !message.trim()) {
+        if ((!message || !message.trim()) && !req.file) {
             return res.status(400).json({
                 success: false,
-                message: 'Reply message is required'
+                message: 'Reply text or image is required'
             });
         }
 
@@ -769,7 +769,7 @@ router.post('/:id/reply', verifyAdmin, upload.single('image'), async (req, res) 
             [
                 'Admin',
                 null,
-                message.trim(),
+                (message || '').trim(),
                 originalMessage.topic,
                 imagePath,
                 originalMessage.student_id,
