@@ -7,9 +7,10 @@ const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
-// COMMENTED OUT - OTP and Email Service imports
-// const otpService = require('../services/otpService');
-// const emailService = require('../services/emailService');
+const otpService = require('../services/otpService');
+const emailService = require('../services/emailService');
+const bcrypt = require('bcryptjs');
+const admin = require('../config/firebase');
 
 /**
  * COMMENTED OUT - POST /api/send-otp
@@ -18,16 +19,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 // router.post('/send-otp', async (req, res) => {
 //     try {
 //         const { email, fullName } = req.body;
-
 //         console.log('[SEND OTP] Request received:', { email, fullName });
-
 //         if (!email || !fullName) {
 //             return res.status(400).json({
 //                 success: false,
 //                 message: 'Email and full name are required',
 //             });
 //         }
-
 //         // Validate email format
 //         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 //         if (!emailRegex.test(email)) {
@@ -36,24 +34,20 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 //                 message: 'Invalid email format',
 //             });
 //         }
-
 //         // Check if email is already registered
 //         const existingUser = await query(
 //             'SELECT id FROM students WHERE email = $1',
 //             [email.toLowerCase().trim()]
 //         );
-
 //         if (existingUser.rows.length > 0) {
 //             return res.status(409).json({
 //                 success: false,
 //                 message: 'This email is already registered. Please login instead.',
 //             });
 //         }
-
 //         // Generate OTP
 //         const otp = otpService.generateOTP();
 //         console.log('[SEND OTP] Generated OTP:', otp);
-
 //         // Store OTP in database
 //         const storeResult = await otpService.storeOTP(email, otp);
 //         if (!storeResult.success) {
@@ -62,7 +56,6 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 //                 message: storeResult.message,
 //             });
 //         }
-
 //         // Send OTP email
 //         const emailResult = await emailService.sendOTPEmail(email, otp, fullName);
 //         if (!emailResult.success) {
@@ -71,14 +64,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 //                 message: 'Failed to send OTP email. Please try again.',
 //             });
 //         }
-
 //         console.log('[SEND OTP] Success:', { email });
-
 //         return res.json({
 //             success: true,
 //             message: 'OTP sent to your email address',
 //         });
-
 //     } catch (error) {
 //         console.error('[SEND OTP] Error:', error);
 //         return res.status(500).json({
@@ -96,33 +86,26 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 // router.post('/verify-otp', async (req, res) => {
 //     try {
 //         const { email, otp } = req.body;
-
 //         console.log('[VERIFY OTP] Request received:', { email, otp: otp ? '******' : 'missing' });
-
 //         if (!email || !otp) {
 //             return res.status(400).json({
 //                 success: false,
 //                 message: 'Email and OTP are required',
 //             });
 //         }
-
 //         // Verify OTP
 //         const verifyResult = await otpService.verifyOTP(email, otp);
-        
 //         if (!verifyResult.success) {
 //             return res.status(400).json({
 //                 success: false,
 //                 message: verifyResult.message,
 //             });
 //         }
-
 //         console.log('[VERIFY OTP] Success:', { email });
-
 //         return res.json({
 //             success: true,
 //             message: 'OTP verified successfully',
 //         });
-
 //     } catch (error) {
 //         console.error('[VERIFY OTP] Error:', error);
 //         return res.status(500).json({
@@ -132,6 +115,219 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 //         });
 //     }
 // });
+
+/**
+ * POST /api/auth/forgot-password-otp
+ * Send OTP to email for password reset verification
+ */
+router.post('/forgot-password-otp', async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        console.log('[FORGOT PASSWORD] Request received:', { email });
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email is required',
+            });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // 1. Check if email exists in students or admins
+        let userExists = false;
+        let userName = 'User';
+
+        const studentCheck = await query('SELECT full_name FROM students WHERE email = $1', [normalizedEmail]);
+        if (studentCheck.rows.length > 0) {
+            userExists = true;
+            userName = studentCheck.rows[0].full_name;
+        } else {
+            const adminCheck = await query('SELECT full_name FROM admins WHERE email = $1', [normalizedEmail]);
+            if (adminCheck.rows.length > 0) {
+                userExists = true;
+                userName = adminCheck.rows[0].full_name || 'Admin';
+            }
+        }
+
+        if (!userExists) {
+            // For security, do not explicitly state if email doesn't exist to prevent enumeration,
+            // but return success. In a real scenario, you'd send a generic message.
+            return res.status(200).json({
+                success: true,
+                message: 'If the email is registered, an OTP has been sent.',
+            });
+        }
+
+        // 2. Generate OTP
+        const otp = otpService.generateOTP();
+        console.log('[FORGOT PASSWORD] Generated OTP for:', email);
+
+        // 3. Store OTP in database
+        const storeResult = await otpService.storeOTP(normalizedEmail, otp);
+        if (!storeResult.success) {
+            return res.status(429).json({
+                success: false,
+                message: storeResult.message,
+            });
+        }
+
+        // 4. Send OTP email
+        const emailResult = await emailService.sendOTPEmail(normalizedEmail, otp, userName);
+        if (!emailResult.success) {
+            return res.status(500).json({
+                success: false,
+                message: 'Failed to send OTP email. Please try again.',
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: 'If the email is registered, an OTP has been sent.',
+        });
+
+    } catch (error) {
+        console.error('[FORGOT PASSWORD] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+        });
+    }
+});
+
+/**
+ * POST /api/auth/verify-reset-otp
+ * Verify OTP for password reset
+ */
+router.post('/verify-reset-otp', async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+
+        if (!email || !otp) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email and OTP are required',
+            });
+        }
+
+        const verifyResult = await otpService.verifyOTP(email, otp);
+        
+        if (!verifyResult.success) {
+            return res.status(400).json({
+                success: false,
+                message: verifyResult.message,
+            });
+        }
+
+        // Generate a short-lived reset token (valid for 15 mins)
+        const resetToken = jwt.sign(
+            { email: email.toLowerCase().trim(), purpose: 'password_reset' },
+            JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        return res.json({
+            success: true,
+            message: 'OTP verified successfully',
+            resetToken
+        });
+
+    } catch (error) {
+        console.error('[VERIFY RESET OTP] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+        });
+    }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * Set new password after OTP verification
+ */
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { resetToken, newPassword } = req.body;
+
+        if (!resetToken || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Reset token and new password are required'
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: 'Password must be at least 6 characters long'
+            });
+        }
+
+        // Verify Reset Token
+        let decoded;
+        try {
+            decoded = jwt.verify(resetToken, JWT_SECRET);
+        } catch (err) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid or expired reset token. Please request a new OTP.'
+            });
+        }
+
+        if (decoded.purpose !== 'password_reset') {
+            return res.status(403).json({ success: false, message: 'Invalid token purpose' });
+        }
+
+        const email = decoded.email;
+
+        // Check user type (Student or Admin)
+        const studentCheck = await query('SELECT firebase_uid FROM students WHERE email = $1', [email]);
+        
+        if (studentCheck.rows.length > 0) {
+            // It's a student, update Firebase password
+            const firebaseUid = studentCheck.rows[0].firebase_uid;
+            
+            try {
+                if (admin && admin.auth) {
+                    await admin.auth().updateUser(firebaseUid, { password: newPassword });
+                } else {
+                    throw new Error('Firebase admin SDK not properly initialized for password reset.');
+                }
+            } catch (firebaseErr) {
+                console.error('[RESET PASSWORD] Firebase error:', firebaseErr);
+                return res.status(500).json({
+                    success: false,
+                    message: 'Failed to update password in authentication system.'
+                });
+            }
+        } else {
+            const adminCheck = await query('SELECT id FROM admins WHERE email = $1', [email]);
+            if (adminCheck.rows.length > 0) {
+                // It's an admin, update postgres password hash
+                const id = adminCheck.rows[0].id;
+                const salt = await bcrypt.genSalt(10);
+                const hash = await bcrypt.hash(newPassword, salt);
+                
+                await query('UPDATE admins SET password_hash = $1 WHERE id = $2', [hash, id]);
+            } else {
+                return res.status(404).json({ success: false, message: 'User profile not found.' });
+            }
+        }
+
+        return res.json({
+            success: true,
+            message: 'Password reset successfully. You can now login.'
+        });
+
+    } catch (error) {
+        console.error('[RESET PASSWORD] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error while resetting password.',
+        });
+    }
+});
 
 /**
  * POST /api/register

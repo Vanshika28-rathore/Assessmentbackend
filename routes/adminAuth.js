@@ -18,10 +18,7 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        console.log('[ADMIN LOGIN] Attempt:', { email, passwordLength: password?.length });
-
         if (!email || !password) {
-            console.log('[ADMIN LOGIN] Missing credentials');
             return res.status(400).json({
                 success: false,
                 message: 'Email and password are required',
@@ -30,14 +27,11 @@ router.post('/login', async (req, res) => {
 
         // 1. Check if admin exists
         const result = await query(
-            'SELECT * FROM admins WHERE email = $1',
+            'SELECT id, email, password_hash, full_name FROM admins WHERE email = $1',
             [email]
         );
 
-        console.log('[ADMIN LOGIN] Query result:', { found: result.rows.length > 0, email });
-
         if (result.rows.length === 0) {
-            console.log('[ADMIN LOGIN] Admin not found');
             return res.status(401).json({
                 success: false,
                 message: 'Invalid credentials',
@@ -45,14 +39,11 @@ router.post('/login', async (req, res) => {
         }
 
         const admin = result.rows[0];
-        console.log('[ADMIN LOGIN] Admin found:', { id: admin.id, email: admin.email, hashPreview: admin.password_hash?.substring(0, 20) });
 
         // 2. Validate password
         const isMatch = await bcrypt.compare(password, admin.password_hash);
-        console.log('[ADMIN LOGIN] Password match:', isMatch);
-        
+
         if (!isMatch) {
-            console.log('[ADMIN LOGIN] Password mismatch');
             return res.status(401).json({
                 success: false,
                 message: 'Invalid credentials',
@@ -66,8 +57,6 @@ router.post('/login', async (req, res) => {
             { expiresIn: '24h' }
         );
 
-        console.log('[ADMIN LOGIN] Success:', { email: admin.email });
-
         return res.json({
             success: true,
             message: 'Login successful',
@@ -80,7 +69,7 @@ router.post('/login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[ADMIN LOGIN] Error:', error);
+        console.error('[ADMIN LOGIN] Error:', error.message);
         return res.status(500).json({
             success: false,
             message: 'Internal server error',
@@ -275,47 +264,6 @@ router.put('/change-password', verifyAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('[ADMIN PASSWORD CHANGE] Error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-        });
-    }
-});
-
-/**
- * POST /api/admin/validate-token
- * Validate admin token and return admin info
- */
-router.post('/validate-token', verifyAdmin, async (req, res) => {
-    try {
-        // If we reach here, token is valid (verifyAdmin middleware passed)
-        return res.json({
-            success: true,
-            message: 'Token is valid',
-            admin: req.admin.adminData,
-        });
-    } catch (error) {
-        console.error('[ADMIN TOKEN VALIDATION] Error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-        });
-    }
-});
-
-/**
- * POST /api/admin/logout
- * Logout admin (client-side token removal)
- */
-router.post('/logout', verifyAdmin, async (req, res) => {
-    try {
-        // For now, just confirm logout (token invalidation would require token blacklist)
-        return res.json({
-            success: true,
-            message: 'Logged out successfully',
-        });
-    } catch (error) {
-        console.error('[ADMIN LOGOUT] Error:', error);
         return res.status(500).json({
             success: false,
             message: 'Internal server error',

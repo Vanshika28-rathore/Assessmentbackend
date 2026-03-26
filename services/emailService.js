@@ -1,7 +1,7 @@
 const { Resend } = require('resend');
 
-// Initialize Resend with API key from environment
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Resend with API key from environment, fallback to a dummy key to prevent crash if missing
+const resend = new Resend(process.env.RESEND_API_KEY || 're_dummy_fallback_key_123');
 
 /**
  * Email Service for sending OTP emails using Resend
@@ -16,6 +16,21 @@ class EmailService {
      */
     async sendOTPEmail(recipientEmail, otp, recipientName = 'Student') {
         try {
+            // Development fallback for missing Resend API key
+            if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 'your_resend_api_key_here') {
+                console.log('\n=============================================');
+                console.log('✉️  DEVELOPMENT MODE: EMAIL SENDING SIMULATED');
+                console.log(`To: ${recipientEmail}`);
+                console.log(`OTP Code: ${otp}`);
+                console.log('=============================================\n');
+                
+                return {
+                    success: true,
+                    message: 'OTP logged to server console for development',
+                    data: { id: `simulated_${Date.now()}` }
+                };
+            }
+
             const emailContent = this.generateOTPEmailHTML(otp, recipientName);
             
             console.log('[EmailService] Attempting to send OTP email to:', recipientEmail);
