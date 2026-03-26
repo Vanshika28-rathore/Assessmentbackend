@@ -128,6 +128,17 @@ router.post('/register', verifyAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/admin/validate-token
+ * Validate JWT token (alias for /me, used by frontend auth context)
+ */
+router.post('/validate-token', verifyAdmin, (req, res) => {
+    res.json({
+        success: true,
+        admin: req.admin,
+    });
+});
+
+/**
  * GET /api/admin/me
  * Verify token and return admin info
  */
