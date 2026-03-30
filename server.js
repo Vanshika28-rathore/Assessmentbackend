@@ -48,7 +48,8 @@ const allowedSocketOrigins = [
     'http://localhost:5173',
     'http://localhost:5174',
     'https://assessment-shnoor-com.onrender.com',
-    'https://assessments.shnoor.com'
+    'https://assessments.shnoor.com',
+    'https://d3v3kobu4jrvb4.cloudfront.net'
 ].filter(Boolean);
 
 const io = new Server(server, {
@@ -106,7 +107,7 @@ app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        
+
         if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
@@ -151,6 +152,14 @@ app.use('/api/student-messages', studentMessagesRoutes);
 // app.use('/api/code', codeExecutionRoutes);
 // app.use('/api/coding-questions', codingQuestionsRoutes);
 app.use('/api/interviews', interviewsRoutes);
+
+app.get('/', (req, res) => {
+    res.json({
+        status: "Backend running",
+        service: "MCQ Exam Portal API"
+    });
+});
+
 
 const { WebSocketServer } = require('ws');
 
@@ -228,7 +237,7 @@ async function autoRepairBrokenStatuses() {
             for (const testId of jobTestIds) {
                 const testRes = await pool.query(`SELECT title FROM tests WHERE id = $1`, [testId]);
                 if (testRes.rows.length === 0) continue;
-                
+
                 const rRes = await pool.query(`
                     SELECT r.* 
                     FROM results r JOIN exams e ON r.exam_id = e.id 
@@ -237,7 +246,7 @@ async function autoRepairBrokenStatuses() {
 
                 if (rRes.rows.length > 0) {
                     hasTests = true;
-                    const r = rRes.rows[rRes.rows.length - 1]; 
+                    const r = rRes.rows[rRes.rows.length - 1];
                     const percentage = r.total_marks > 0 ? (r.marks_obtained / r.total_marks) * 100 : 0;
 
                     await pool.query(`
@@ -282,7 +291,7 @@ async function autoRepairBrokenStatuses() {
                 fixedCount++;
             }
         }
-        if(fixedCount > 0) console.log(`✅ [Auto-Repair] Successfully healed ${fixedCount} corrupted job applications!`);
+        if (fixedCount > 0) console.log(`✅ [Auto-Repair] Successfully healed ${fixedCount} corrupted job applications!`);
     } catch (err) {
         console.error('❌ [Auto-Repair] Failed during automatic state repair:', err.message);
     }
@@ -297,7 +306,7 @@ runPendingMigrations().then(() => autoRepairBrokenStatuses()).then(() => {
             pid: process.pid,
             nodeVersion: process.version,
         }, 'Server started successfully');
-        
+
         console.log(`✅ Server running on port ${PORT}`);
         console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
         console.log(`🔗 API: http://localhost:${PORT}`);
@@ -305,7 +314,7 @@ runPendingMigrations().then(() => autoRepairBrokenStatuses()).then(() => {
         console.log(`💚 Health: http://localhost:${PORT}/health`);
         console.log(`📈 Metrics: http://localhost:${PORT}/metrics`);
         console.log(`🔗 PeerJS: http://localhost:${PORT}/peerjs`);
-        
+
         // Signal PM2 that app is ready
         if (process.send) {
             process.send('ready');
@@ -351,14 +360,14 @@ function calculateMonitoredCount(totalStudents) {
 function selectStudentsForMonitoring() {
     const allStudents = Array.from(activeSessions.keys());
     const monitorCount = calculateMonitoredCount(allStudents.length);
-    
+
     // Clear previous selection
     monitoredStudents.clear();
-    
+
     // Randomly select students
     const shuffled = allStudents.sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, monitorCount);
-    
+
     selected.forEach(studentId => {
         monitoredStudents.add(studentId);
         const session = activeSessions.get(studentId);
@@ -366,7 +375,7 @@ function selectStudentsForMonitoring() {
             session.isMonitored = true;
         }
     });
-    
+
     // Mark non-monitored students
     allStudents.forEach(studentId => {
         if (!monitoredStudents.has(studentId)) {
@@ -376,13 +385,13 @@ function selectStudentsForMonitoring() {
             }
         }
     });
-    
+
     logger.info({
         totalStudents: allStudents.length,
         monitoredCount: selected.length,
-        sampleRate: (selected.length/allStudents.length*100).toFixed(1) + '%'
+        sampleRate: (selected.length / allStudents.length * 100).toFixed(1) + '%'
     }, 'Proctoring monitoring pool updated');
-    
+
     // Notify all students about their monitoring status
     allStudents.forEach(studentId => {
         const session = activeSessions.get(studentId);
@@ -393,7 +402,7 @@ function selectStudentsForMonitoring() {
             });
         }
     });
-    
+
     // Notify admins about monitoring pool update
     io.to('admin-room').emit('monitoring-pool-updated', {
         totalStudents: allStudents.length,
@@ -413,10 +422,10 @@ let rotationInterval = setInterval(() => {
 }, PROCTORING_CONFIG.ROTATION_INTERVAL * 60 * 1000);
 
 io.on('connection', (socket) => {
-    logger.info({ 
-        socketId: socket.id, 
+    logger.info({
+        socketId: socket.id,
         transport: socket.conn.transport.name,
-        remoteAddress: socket.conn.remoteAddress 
+        remoteAddress: socket.conn.remoteAddress
     }, 'Socket.io client connected');
 
     // Connection timeout handling
@@ -430,17 +439,17 @@ io.on('connection', (socket) => {
 
     // Error handling
     socket.on('error', (error) => {
-        logger.error({ 
-            socketId: socket.id, 
+        logger.error({
+            socketId: socket.id,
             studentId: socket.studentId,
             error: error.message,
-            stack: error.stack 
+            stack: error.stack
         }, 'Socket.io error occurred');
-        
+
         // Emit error to client for handling
-        socket.emit('socket-error', { 
-            message: 'Connection error occurred', 
-            shouldReconnect: true 
+        socket.emit('socket-error', {
+            message: 'Connection error occurred',
+            shouldReconnect: true
         });
     });
 
@@ -453,12 +462,12 @@ io.on('connection', (socket) => {
 
     // Handle reconnection
     socket.on('reconnect-request', (data) => {
-        logger.info({ 
-            socketId: socket.id, 
-            studentId: data?.studentId 
+        logger.info({
+            socketId: socket.id,
+            studentId: data?.studentId
         }, 'Client requesting reconnection');
-        
-        socket.emit('reconnect-approved', { 
+
+        socket.emit('reconnect-approved', {
             message: 'Reconnection approved',
             timestamp: new Date().toISOString()
         });
@@ -467,10 +476,10 @@ io.on('connection', (socket) => {
     // Student joins proctoring session
     socket.on('student:join-proctoring', (data) => {
         const { studentId, studentName, testId, testTitle } = data;
-        
+
         // Store with string key for consistent lookup
         const studentIdStr = String(studentId);
-        
+
         activeSessions.set(studentIdStr, {
             socketId: socket.id,
             studentId: studentIdStr,
@@ -519,7 +528,7 @@ io.on('connection', (socket) => {
         }));
 
         socket.emit('active-sessions', sessions);
-        
+
         // Send monitoring configuration
         socket.emit('monitoring-config', {
             sampleRate: PROCTORING_CONFIG.SAMPLE_RATE,
@@ -541,7 +550,7 @@ io.on('connection', (socket) => {
     // ============================================
     // SUPPORT MESSAGE NOTIFICATION EVENTS
     // ============================================
-    
+
     // Student joins support notifications (for receiving admin reply notifications)
     socket.on('student:join-support', (data) => {
         const { rollNumber, studentName } = data;
@@ -549,37 +558,37 @@ io.on('connection', (socket) => {
             logger.warn({ socketId: socket.id }, 'Student tried to join support without rollNumber');
             return;
         }
-        
+
         const rollNumberStr = String(rollNumber);
         studentSupportSockets.set(rollNumberStr, socket.id);
         socket.join(`support-student-${rollNumberStr}`);
         socket.rollNumber = rollNumberStr;
-        
+
         // Debug: List all rooms this socket is in
         const rooms = Array.from(socket.rooms);
-        logger.info({ 
-            rollNumber: rollNumberStr, 
-            studentName, 
+        logger.info({
+            rollNumber: rollNumberStr,
+            studentName,
             socketId: socket.id,
             rooms: rooms,
             roomJoined: `support-student-${rollNumberStr}`
         }, 'Student joined support notifications');
-        
+
         // Send confirmation back to student
-        socket.emit('student:support-joined', { 
-            success: true, 
+        socket.emit('student:support-joined', {
+            success: true,
             room: `support-student-${rollNumberStr}`,
             socketId: socket.id
         });
     });
-    
+
     // Admin joins support notifications room (for receiving student message notifications)
     socket.on('admin:join-support', () => {
         socket.join('admin-support-room');
         socket.isAdminSupport = true;
-        
+
         logger.info({ socketId: socket.id }, 'Admin joined support notification room');
-        
+
         // Confirm join
         socket.emit('admin:support-joined', { success: true });
     });
@@ -591,7 +600,7 @@ io.on('connection', (socket) => {
     // Frame-based proctoring - Receive frame from student (ONLY if monitored)
     socket.on('proctoring:frame', (data) => {
         const { studentId, studentName, testId, testTitle, frame, timestamp, aiViolations } = data;
-        
+
         // Only relay frames from monitored students
         if (monitoredStudents.has(studentId)) {
             // Relay frame to all admins in monitoring room
@@ -610,12 +619,12 @@ io.on('connection', (socket) => {
     // AI Violation detected - Store and alert admins
     socket.on('proctoring:ai-violation', async (data) => {
         const { studentId, testId, violation, timestamp } = data;
-        
-        logger.warn({ 
-            studentId, 
-            testId, 
+
+        logger.warn({
+            studentId,
+            testId,
             violationType: violation.type,
-            severity: violation.severity 
+            severity: violation.severity
         }, 'AI Violation detected');
 
         try {
@@ -662,8 +671,8 @@ io.on('connection', (socket) => {
         const studentIdStr = String(studentId);
         const studentSession = activeSessions.get(studentIdStr);
 
-        logger.info({ 
-            studentIdStr, 
+        logger.info({
+            studentIdStr,
             hasSession: !!studentSession,
             activeSessions: Array.from(activeSessions.keys())
         }, 'Checking student session');
@@ -701,17 +710,17 @@ io.on('connection', (socket) => {
             io.to(studentSession.socketId).emit('proctoring:message-received', messageData);
 
             // Confirm delivery to admin
-            socket.emit('admin:message-delivered', { 
-                ...messageData, 
+            socket.emit('admin:message-delivered', {
+                ...messageData,
                 success: true,
                 studentName: studentSession.studentName
             });
 
-            logger.info({ 
-                adminId, 
-                studentId, 
+            logger.info({
+                adminId,
+                studentId,
                 studentName: studentSession.studentName,
-                messageType, 
+                messageType,
                 priority,
                 messagePreview: message.substring(0, 50) + '...'
             }, 'Message sent to student');
@@ -783,7 +792,7 @@ io.on('connection', (socket) => {
     });
 
 
-     // Admin force-stops a student's test (for suspected cheating)
+    // Admin force-stops a student's test (for suspected cheating)
     socket.on('admin:force-stop-test', async (data) => {
         const { studentId, testId, reason, adminId, adminName, violationSummary } = data;
 
@@ -795,11 +804,11 @@ io.on('connection', (socket) => {
         console.log('Reason:', reason);
         console.log('========================================');
 
-        logger.warn({ 
-            studentId, 
-            testId, 
-            adminId, 
-            reason: reason?.substring(0, 50) + '...' 
+        logger.warn({
+            studentId,
+            testId,
+            adminId,
+            reason: reason?.substring(0, 50) + '...'
         }, '🛑 Admin force-stopping student test');
 
         // Validate admin authorization
@@ -807,9 +816,9 @@ io.on('connection', (socket) => {
         if (!socket.isAdmin) {
             console.log('❌ UNAUTHORIZED - Admin flag not set');
             logger.warn({ socketId: socket.id }, 'Unauthorized force-stop attempt');
-            socket.emit('admin:force-stop-failed', { 
-                studentId, 
-                error: 'Unauthorized: Admin access required' 
+            socket.emit('admin:force-stop-failed', {
+                studentId,
+                error: 'Unauthorized: Admin access required'
             });
             return;
         }
@@ -819,9 +828,9 @@ io.on('connection', (socket) => {
         if (!studentId || !testId || !reason || !adminId) {
             console.log('❌ MISSING REQUIRED FIELDS');
             logger.warn({ studentId, testId }, 'Force-stop missing required fields');
-            socket.emit('admin:force-stop-failed', { 
-                studentId, 
-                error: 'Missing required fields' 
+            socket.emit('admin:force-stop-failed', {
+                studentId,
+                error: 'Missing required fields'
             });
             return;
         }
@@ -836,9 +845,9 @@ io.on('connection', (socket) => {
         if (!studentSession) {
             console.log('❌ STUDENT NOT IN ACTIVE SESSION');
             logger.warn({ studentId: studentIdStr }, 'Cannot force-stop: Student not in active session');
-            socket.emit('admin:force-stop-failed', { 
-                studentId: studentIdStr, 
-                error: 'Student is not currently taking a test' 
+            socket.emit('admin:force-stop-failed', {
+                studentId: studentIdStr,
+                error: 'Student is not currently taking a test'
             });
             return;
         }
@@ -858,11 +867,11 @@ io.on('connection', (socket) => {
             const terminationId = terminationResult.rows[0].id;
             console.log('✅ Termination record created with ID:', terminationId);
 
-            logger.info({ 
-                terminationId, 
-                studentId, 
-                testId, 
-                adminId 
+            logger.info({
+                terminationId,
+                studentId,
+                testId,
+                adminId
             }, 'Forced termination record created');
 
             console.log('📤 Sending force-stop command to student socket:', studentSession.socketId);
@@ -886,7 +895,7 @@ io.on('connection', (socket) => {
 
             console.log('📤 Sending success response to admin...');
             // 4. Confirm success to admin
-            socket.emit('admin:force-stop-success', { 
+            socket.emit('admin:force-stop-success', {
                 studentId: studentIdStr,
                 studentName: studentSession.studentName,
                 testId: testId,
@@ -908,13 +917,13 @@ io.on('connection', (socket) => {
             });
             console.log('✅ Other admins notified');
 
-            logger.info({ 
+            logger.info({
                 terminationId,
-                studentId, 
+                studentId,
                 studentName: studentSession.studentName,
                 testId,
                 adminId,
-                adminName 
+                adminName
             }, '✅ Test force-stopped successfully');
 
             console.log('========================================');
@@ -927,9 +936,9 @@ io.on('connection', (socket) => {
             console.error('Error details:', error);
             console.log('========================================');
             logger.error({ error, studentId, testId, adminId }, 'Error force-stopping test');
-            socket.emit('admin:force-stop-failed', { 
-                studentId: studentIdStr, 
-                error: 'Database error - failed to record termination' 
+            socket.emit('admin:force-stop-failed', {
+                studentId: studentIdStr,
+                error: 'Database error - failed to record termination'
             });
         }
     });
@@ -942,7 +951,7 @@ io.on('connection', (socket) => {
     socket.on('student:leave-proctoring', (data) => {
         if (data && data.studentId) {
             logger.info({ studentId: data.studentId, studentName: data.studentName }, 'Student leaving proctoring');
-            
+
             // Notify admins
             io.to('admin-room').emit('student:left', {
                 studentId: data.studentId,
@@ -953,9 +962,9 @@ io.on('connection', (socket) => {
             if (activeSessions.has(data.studentId)) {
                 activeSessions.delete(data.studentId);
             }
-            
+
             monitoredStudents.delete(data.studentId);
-            
+
             // Reselect monitored students after student leaves
             if (activeSessions.size > 0) {
                 selectStudentsForMonitoring();
@@ -966,7 +975,7 @@ io.on('connection', (socket) => {
     // ============================================
     // INTERVIEW SIGNALING HANDLERS
     // ============================================
-    
+
     // Student joins dashboard room for notifications
     socket.on('student:join-dashboard', (data) => {
         const { studentId } = data;
@@ -974,36 +983,36 @@ io.on('connection', (socket) => {
         socket.studentDashboardId = studentId;
         logger.info({ studentId }, 'Student joined dashboard room for interview notifications');
     });
-    
+
     // Join interview room
     socket.on('interview:join', (data) => {
         const { interviewId, peerId, role } = data; // role: 'admin' or 'student'
-        
+
         socket.join(`interview-${interviewId}`);
         socket.interviewId = interviewId;
         socket.interviewRole = role;
         socket.peerId = peerId;
-        
+
         logger.info({ interviewId, peerId, role, socketId: socket.id }, 'User joined interview room');
         console.log(`Socket ${socket.id} (${role}) joined room interview-${interviewId} with peer ID ${peerId}`);
-        
+
         // Store participant info for reconnection handling
         if (!socket.interviewParticipants) {
             socket.interviewParticipants = new Map();
         }
         socket.interviewParticipants.set(socket.id, { peerId, role, interviewId });
-        
+
         // Notify other participant that someone joined
         socket.to(`interview-${interviewId}`).emit('interview:peer-joined', {
             peerId,
             role,
             socketId: socket.id
         });
-        
+
         // Send current participants to the newly joined user
         const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
         console.log(`Current sockets in room interview-${interviewId}:`, roomSockets ? Array.from(roomSockets) : 'No sockets');
-        
+
         if (roomSockets) {
             const participants = [];
             roomSockets.forEach(socketId => {
@@ -1016,19 +1025,19 @@ io.on('connection', (socket) => {
                     });
                 }
             });
-            
+
             if (participants.length > 0) {
                 socket.emit('interview:existing-participants', { participants });
             }
         }
     });
-    
+
     // Signal peer ID to other participant
     socket.on('interview:signal-peer', (data) => {
         const { interviewId, peerId } = data;
-        
+
         logger.info({ interviewId, peerId, role: socket.interviewRole }, 'Signaling peer ID');
-        
+
         // Broadcast to other participants in the interview room
         socket.to(`interview-${interviewId}`).emit('interview:peer-available', {
             peerId,
@@ -1036,13 +1045,13 @@ io.on('connection', (socket) => {
             socketId: socket.id
         });
     });
-    
+
     // Admin starts call - notify student on dashboard AND in interview room
     socket.on('interview:start-call', async (data) => {
         const { interviewId, studentId } = data;
-        
+
         logger.info({ interviewId, studentId }, 'Admin starting call');
-        
+
         try {
             // Get interview details for notification
             const result = await pool.query(
@@ -1053,39 +1062,39 @@ io.on('connection', (socket) => {
                  WHERE i.id = $1`,
                 [interviewId]
             );
-            
+
             if (result.rows.length > 0) {
                 const interview = result.rows[0];
-                
+
                 // Update interview status to in_progress
                 await pool.query(
                     `UPDATE interviews SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
                     [interviewId]
                 );
-                
+
                 // Notify student in interview room (if they're already there)
                 console.log(`Sending call-started event to interview room: interview-${interviewId}`);
                 const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
                 console.log(`Sockets in room interview-${interviewId}:`, roomSockets ? Array.from(roomSockets) : 'No sockets');
-                
+
                 socket.to(`interview-${interviewId}`).emit('interview:call-started', {
                     interviewId,
                     timestamp: new Date().toISOString()
                 });
-                
+
                 // Notify student on dashboard (if they're on dashboard page)
                 io.to(`student-dashboard-${interview.student_id}`).emit('interview:incoming-call', {
                     interviewId: interview.id,
                     testTitle: interview.test_title,
                     instituteName: interview.institute_name
                 });
-                
-                logger.info({ 
-                    interviewId, 
+
+                logger.info({
+                    interviewId,
                     studentId: interview.student_id,
-                    testTitle: interview.test_title 
+                    testTitle: interview.test_title
                 }, 'Call notification sent to student');
-                
+
                 // Confirm to admin that call was initiated
                 socket.emit('interview:call-initiated', {
                     success: true,
@@ -1102,29 +1111,29 @@ io.on('connection', (socket) => {
             });
         }
     });
-    
+
     // Student is ready to receive call - notify admin to initiate PeerJS call
     socket.on('interview:student-ready', (data) => {
         const { interviewId, peerId } = data;
-        
+
         logger.info({ interviewId, peerId }, 'Student ready to receive call');
-        
+
         // Notify admin in the interview room
         socket.to(`interview-${interviewId}`).emit('interview:student-ready', {
             peerId,
             timestamp: new Date().toISOString()
         });
     });
-    
+
     // Get room status - who's currently in the room
     socket.on('interview:get-room-status', (data) => {
         const { interviewId } = data;
-        
+
         console.log(`Getting room status for interview-${interviewId}`);
-        
+
         const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
         const participants = [];
-        
+
         if (roomSockets) {
             roomSockets.forEach(socketId => {
                 const participantSocket = io.sockets.sockets.get(socketId);
@@ -1137,21 +1146,21 @@ io.on('connection', (socket) => {
                 }
             });
         }
-        
+
         console.log(`Room status for interview-${interviewId}:`, participants);
-        
-        socket.emit('interview:room-status', { 
+
+        socket.emit('interview:room-status', {
             interviewId,
-            participants 
+            participants
         });
     });
-    
+
     // Student joined interview room - notify admin
     socket.on('interview:student-joined-room', (data) => {
         const { interviewId, peerId, studentId } = data;
-        
+
         logger.info({ interviewId, peerId, studentId }, 'Student joined interview room');
-        
+
         // Notify admin in the interview room
         socket.to(`interview-${interviewId}`).emit('interview:student-joined-room', {
             peerId,
@@ -1159,18 +1168,18 @@ io.on('connection', (socket) => {
             timestamp: new Date().toISOString()
         });
     });
-    
+
     // Handle WebRTC signaling
     socket.on('interview:webrtc-signal', (data) => {
         const { interviewId, targetSocketId, signal, type } = data;
-        
-        logger.info({ 
-            interviewId, 
-            targetSocketId, 
+
+        logger.info({
+            interviewId,
+            targetSocketId,
             type,
-            from: socket.interviewRole 
+            from: socket.interviewRole
         }, 'WebRTC signal received');
-        
+
         // Forward signal to specific target socket
         if (targetSocketId) {
             socket.to(targetSocketId).emit('interview:webrtc-signal', {
@@ -1189,20 +1198,20 @@ io.on('connection', (socket) => {
             });
         }
     });
-    
+
     // Chat message in interview room
     socket.on('interview:send-chat', async (data) => {
         const { interviewId, sender, senderName, text, timestamp } = data;
-        
-        logger.info({ 
-            interviewId, 
-            sender, 
-            senderName, 
+
+        logger.info({
+            interviewId,
+            sender,
+            senderName,
             text: text.substring(0, 50),
             socketId: socket.id,
             room: `interview-${interviewId}`
         }, 'Chat message received, broadcasting to room');
-        
+
         try {
             // Store chat message in database for persistence
             await pool.query(
@@ -1210,7 +1219,7 @@ io.on('connection', (socket) => {
                  VALUES ($1, $2, $3, $4, $5)`,
                 [interviewId, sender, senderName, text, timestamp]
             );
-            
+
             // Broadcast to other participant in the interview room
             socket.to(`interview-${interviewId}`).emit('interview:chat-message', {
                 sender,
@@ -1218,13 +1227,13 @@ io.on('connection', (socket) => {
                 text,
                 timestamp
             });
-            
+
             // Confirm to sender
             socket.emit('interview:chat-sent', {
                 success: true,
                 timestamp
             });
-            
+
             logger.info({ interviewId }, 'Chat message stored and broadcasted');
         } catch (error) {
             logger.error({ error, interviewId }, 'Error storing chat message');
@@ -1235,11 +1244,11 @@ io.on('connection', (socket) => {
             });
         }
     });
-    
+
     // Get chat history for interview room
     socket.on('interview:get-chat-history', async (data) => {
         const { interviewId } = data;
-        
+
         try {
             const result = await pool.query(
                 `SELECT sender_type, sender_name, message, created_at
@@ -1248,7 +1257,7 @@ io.on('connection', (socket) => {
                  ORDER BY created_at ASC`,
                 [interviewId]
             );
-            
+
             socket.emit('interview:chat-history', {
                 success: true,
                 messages: result.rows
@@ -1262,11 +1271,11 @@ io.on('connection', (socket) => {
             });
         }
     });
-    
+
     // Connection status updates
     socket.on('interview:connection-status', (data) => {
         const { interviewId, status, quality } = data;
-        
+
         // Broadcast connection status to other participants
         socket.to(`interview-${interviewId}`).emit('interview:peer-connection-status', {
             peerId: socket.peerId,
@@ -1276,47 +1285,47 @@ io.on('connection', (socket) => {
             timestamp: new Date().toISOString()
         });
     });
-    
+
     // Leave interview room
     socket.on('interview:leave', (data) => {
         const { interviewId } = data;
-        
+
         logger.info({ interviewId, role: socket.interviewRole }, 'User left interview room');
-        
+
         // Notify other participant
         socket.to(`interview-${interviewId}`).emit('interview:peer-left', {
             role: socket.interviewRole,
             peerId: socket.peerId,
             socketId: socket.id
         });
-        
+
         socket.leave(`interview-${interviewId}`);
-        
+
         // Clear interview-related data
         socket.interviewId = null;
         socket.interviewRole = null;
         socket.peerId = null;
     });
-    
+
     // Reconnection handling
     socket.on('interview:reconnect', async (data) => {
         const { interviewId, peerId, role } = data;
-        
+
         logger.info({ interviewId, peerId, role }, 'User reconnecting to interview');
-        
+
         // Rejoin the room
         socket.join(`interview-${interviewId}`);
         socket.interviewId = interviewId;
         socket.interviewRole = role;
         socket.peerId = peerId;
-        
+
         // Notify other participants about reconnection
         socket.to(`interview-${interviewId}`).emit('interview:peer-reconnected', {
             peerId,
             role,
             socketId: socket.id
         });
-        
+
         // Send current participants to the reconnected user
         const roomSockets = io.sockets.adapter.rooms.get(`interview-${interviewId}`);
         if (roomSockets) {
@@ -1331,10 +1340,10 @@ io.on('connection', (socket) => {
                     });
                 }
             });
-            
+
             socket.emit('interview:existing-participants', { participants });
         }
-        
+
         // Send chat history
         try {
             const result = await pool.query(
@@ -1344,7 +1353,7 @@ io.on('connection', (socket) => {
                  ORDER BY created_at ASC`,
                 [interviewId]
             );
-            
+
             socket.emit('interview:chat-history', {
                 success: true,
                 messages: result.rows
@@ -1355,48 +1364,48 @@ io.on('connection', (socket) => {
     });
 
     // ===== SIMPLE-PEER HANDLERS =====
-    
+
     // Join interview room (simple-peer version)
     socket.on('join-interview', (data) => {
         const { interviewId, role, userId } = data;
-        
-        logger.info({ 
-            socketId: socket.id, 
-            interviewId, 
-            role, 
-            userId 
+
+        logger.info({
+            socketId: socket.id,
+            interviewId,
+            role,
+            userId
         }, 'User joining interview room (simple-peer)');
-        
+
         socket.join(`interview-${interviewId}`);
         socket.interviewId = interviewId;
         socket.interviewRole = role;
         socket.userId = userId;
-        
+
         // Notify other participants
         socket.to(`interview-${interviewId}`).emit('user-joined', {
             socketId: socket.id,
             role,
             userId
         });
-        
-        logger.info({ 
-            socketId: socket.id, 
-            interviewId, 
-            role 
+
+        logger.info({
+            socketId: socket.id,
+            interviewId,
+            role
         }, 'User successfully joined interview room (simple-peer)');
     });
 
     // Handle WebRTC signaling for simple-peer
     socket.on('webrtc-signal', (data) => {
         const { interviewId, signal, role } = data;
-        
-        logger.info({ 
-            interviewId, 
+
+        logger.info({
+            interviewId,
             signalType: signal.type,
             from: role,
             socketId: socket.id
         }, 'WebRTC signal received (simple-peer)');
-        
+
         // Forward signal to other participants in the interview room
         socket.to(`interview-${interviewId}`).emit('webrtc-signal', {
             signal,
@@ -1408,13 +1417,13 @@ io.on('connection', (socket) => {
     // Handle call initiation
     socket.on('initiate-call', (data) => {
         const { interviewId, role } = data;
-        
-        logger.info({ 
-            interviewId, 
+
+        logger.info({
+            interviewId,
             role,
             socketId: socket.id
         }, 'Call initiated (simple-peer)');
-        
+
         // Notify other participants
         socket.to(`interview-${interviewId}`).emit('call-initiated', {
             role,
@@ -1425,14 +1434,14 @@ io.on('connection', (socket) => {
     // Handle chat messages (simple-peer version)
     socket.on('send-chat', async (data) => {
         const { interviewId, role, message, timestamp } = data;
-        
-        logger.info({ 
-            interviewId, 
+
+        logger.info({
+            interviewId,
             role,
             messageLength: message.length,
             socketId: socket.id
         }, 'Chat message received (simple-peer)');
-        
+
         try {
             // Store message in database
             const query = `
@@ -1440,7 +1449,7 @@ io.on('connection', (socket) => {
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING *
             `;
-            
+
             const senderName = role === 'admin' ? 'Interviewer' : 'Student';
             const result = await pool.query(query, [
                 interviewId,
@@ -1449,9 +1458,9 @@ io.on('connection', (socket) => {
                 message,
                 timestamp || new Date().toISOString()
             ]);
-            
+
             const savedMessage = result.rows[0];
-            
+
             // Broadcast to all participants in the interview room
             io.to(`interview-${interviewId}`).emit('chat-message', {
                 id: savedMessage.id,
@@ -1460,16 +1469,16 @@ io.on('connection', (socket) => {
                 message: savedMessage.message,
                 timestamp: savedMessage.created_at
             });
-            
+
         } catch (error) {
-            logger.error({ 
-                error: error.message, 
+            logger.error({
+                error: error.message,
                 interviewId,
                 socketId: socket.id
             }, 'Failed to save chat message (simple-peer)');
-            
-            socket.emit('chat-error', { 
-                error: 'Failed to send message' 
+
+            socket.emit('chat-error', {
+                error: 'Failed to send message'
             });
         }
     });
@@ -1477,16 +1486,16 @@ io.on('connection', (socket) => {
     // Get chat history (simple-peer version)
     socket.on('get-chat-history', async (data) => {
         const { interviewId } = data;
-        
+
         try {
             const query = `
                 SELECT * FROM interview_chat_messages 
                 WHERE interview_id = $1 
                 ORDER BY created_at ASC
             `;
-            
+
             const result = await pool.query(query, [interviewId]);
-            
+
             socket.emit('chat-history', {
                 messages: result.rows.map(row => ({
                     id: row.id,
@@ -1496,14 +1505,14 @@ io.on('connection', (socket) => {
                     timestamp: row.created_at
                 }))
             });
-            
+
         } catch (error) {
-            logger.error({ 
-                error: error.message, 
+            logger.error({
+                error: error.message,
                 interviewId,
                 socketId: socket.id
             }, 'Failed to fetch chat history (simple-peer)');
-            
+
             socket.emit('chat-history', { messages: [] });
         }
     });
@@ -1511,13 +1520,13 @@ io.on('connection', (socket) => {
     // Handle interview end (simple-peer version)
     socket.on('end-interview', (data) => {
         const { interviewId } = data;
-        
-        logger.info({ 
+
+        logger.info({
             interviewId,
             socketId: socket.id,
             role: socket.interviewRole
         }, 'Interview ended (simple-peer)');
-        
+
         // Notify other participants
         socket.to(`interview-${interviewId}`).emit('interview-ended', {
             endedBy: socket.interviewRole
@@ -1527,15 +1536,15 @@ io.on('connection', (socket) => {
     // Handle leaving interview (simple-peer version)
     socket.on('leave-interview', (data) => {
         const { interviewId, role } = data;
-        
-        logger.info({ 
+
+        logger.info({
             interviewId,
             role,
             socketId: socket.id
         }, 'User leaving interview (simple-peer)');
-        
+
         socket.leave(`interview-${interviewId}`);
-        
+
         // Notify other participants
         socket.to(`interview-${interviewId}`).emit('user-left', {
             role,
@@ -1552,11 +1561,11 @@ io.on('connection', (socket) => {
 
     // Disconnect handling with comprehensive cleanup
     socket.on('disconnect', (reason) => {
-        logger.debug({ 
-            socketId: socket.id, 
+        logger.debug({
+            socketId: socket.id,
             studentId: socket.studentId,
             isAdmin: socket.isAdmin,
-            reason 
+            reason
         }, 'Socket.io client disconnected');
 
         // Clear any pending timeouts
@@ -1565,27 +1574,27 @@ io.on('connection', (socket) => {
         if (socket.isAdmin) {
             adminSockets.delete(socket.id);
             logger.info({ socketId: socket.id, reason }, 'Admin left monitoring room');
-            
+
             // Notify remaining admins
             io.to('admin-room').emit('admin:left', {
                 socketId: socket.id,
                 timestamp: new Date(),
                 reason
             });
-            
+
         } else if (socket.studentId) {
             const session = activeSessions.get(socket.studentId);
             if (session) {
-                logger.info({ 
-                    studentId: socket.studentId, 
+                logger.info({
+                    studentId: socket.studentId,
                     studentName: session.studentName,
                     reason,
                     duration: new Date() - session.startTime
                 }, 'Student disconnected');
-                
+
                 // Remove from monitoring if they were being monitored
                 monitoredStudents.delete(socket.studentId);
-                
+
                 // Notify admins with disconnect reason
                 io.to('admin-room').emit('student:left', {
                     studentId: socket.studentId,
@@ -1597,14 +1606,14 @@ io.on('connection', (socket) => {
 
                 // Clean up session
                 activeSessions.delete(socket.studentId);
-                
+
                 // Reselect monitored students after someone leaves
                 if (activeSessions.size > 0) {
                     selectStudentsForMonitoring();
                 }
             }
         }
-        
+
         // Clean up support socket if present
         if (socket.rollNumber) {
             studentSupportSockets.delete(socket.rollNumber);
@@ -1614,21 +1623,21 @@ io.on('connection', (socket) => {
 
     // Handle connection errors specifically
     socket.on('connect_error', (error) => {
-        logger.error({ 
+        logger.error({
             socketId: socket.id,
             studentId: socket.studentId,
-            error: error.message 
+            error: error.message
         }, 'Socket.io connection error');
     });
 
     // Handle client-side errors
     socket.on('client-error', (errorData) => {
-        logger.error({ 
+        logger.error({
             socketId: socket.id,
             studentId: socket.studentId,
-            clientError: errorData 
+            clientError: errorData
         }, 'Client-side error reported');
-        
+
         // Optionally notify admins of client issues
         if (socket.studentId) {
             io.to('admin-room').emit('student:error', {
@@ -1647,17 +1656,17 @@ const CONNECTION_TIMEOUT_THRESHOLD = 60000; // 60 seconds
 setInterval(() => {
     const now = new Date();
     const staleConnections = [];
-    
+
     // Check for stale connections
     activeSessions.forEach((session, studentId) => {
         const socket = io.sockets.sockets.get(session.socketId);
-        
+
         if (!socket || !socket.connected) {
             staleConnections.push(studentId);
         } else if (session.lastPing && (now - session.lastPing) > CONNECTION_TIMEOUT_THRESHOLD) {
             // Connection seems stale, ping it
             socket.emit('health-check', { timestamp: now.toISOString() });
-            
+
             // If no response in 10 seconds, consider it stale
             setTimeout(() => {
                 const currentSession = activeSessions.get(studentId);
@@ -1668,13 +1677,13 @@ setInterval(() => {
             }, 10000);
         }
     });
-    
+
     // Clean up stale connections
     staleConnections.forEach(studentId => {
         const session = activeSessions.get(studentId);
         if (session) {
             logger.info({ studentId, studentName: session.studentName }, 'Cleaning up stale connection');
-            
+
             // Notify admins
             io.to('admin-room').emit('student:left', {
                 studentId,
@@ -1682,18 +1691,18 @@ setInterval(() => {
                 reason: 'connection_timeout',
                 timestamp: new Date()
             });
-            
+
             // Remove from monitoring and sessions
             monitoredStudents.delete(studentId);
             activeSessions.delete(studentId);
         }
     });
-    
+
     // Reselect monitored students if any were removed
     if (staleConnections.length > 0 && activeSessions.size > 0) {
         selectStudentsForMonitoring();
     }
-    
+
     // Log connection health stats periodically
     if (activeSessions.size > 0) {
         logger.debug({
@@ -1717,16 +1726,16 @@ io.engine.on('connection_error', (err) => {
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
     logger.info({ signal }, 'Shutdown signal received, closing server gracefully');
-    
+
     server.close(() => {
         logger.info('HTTP server closed');
-        
+
         pool.end(() => {
             logger.info('Database pool closed');
             process.exit(0);
         });
     });
-    
+
     // Force shutdown after 30 seconds
     setTimeout(() => {
         logger.error('Forced shutdown after timeout');
