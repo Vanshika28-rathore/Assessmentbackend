@@ -2,8 +2,26 @@ name: Deploy Backend
 on:
   push:
     branches: [main]
+
 jobs:
+  # JOB 1: THE GUARDRAIL
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Tests
+        run: npm test
+
+  # JOB 2: THE DEPLOYMENT
   deploy:
+    needs: test  # <-- This tells GitHub: "DO NOT run this if the test job fails!"
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to EC2
