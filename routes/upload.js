@@ -11,7 +11,7 @@ const verifyAdmin = require('../middleware/verifyAdmin');
 const storage = multer.memoryStorage();
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+    limits: { fileSize: 10 * 1024 * 1024 } // ✅ FIX: Increased to 10MB
 });
 
 const DEFAULT_JOB_ROLE = 'General Assessment Candidate';
@@ -83,6 +83,54 @@ const normalizeJobRoles = (jobRoles) => {
         .filter((role) => role.job_role !== '' || role.job_description !== '');
 };
 
+// ✅ FIX: Helper to normalize column key lookup
+const makeGetVal = (row) => (key) => {
+    const normalizedKey = key.toLowerCase().replace(/\s+/g, '');
+    for (const k of Object.keys(row)) {
+        if (k.toLowerCase().replace(/\s+/g, '') === normalizedKey) return row[k];
+    }
+    return undefined;
+};
+
+// ✅ FIX: Bulk insert helper — replaces N individual INSERTs with a single query
+const buildBulkQuestionInsert = (data, testId) => {
+    const values = [];
+    const params = [];
+    let paramIndex = 1;
+    let insertedCount = 0;
+
+    for (const row of data) {
+        const getVal = makeGetVal(row);
+
+        const questionText = getVal('question');
+        const optionA = getVal('optiona');
+        const optionB = getVal('optionb');
+        const optionC = getVal('optionc');
+        const optionD = getVal('optiond');
+        const correctOption = getVal('correctoption');
+        const marks = getVal('marks') || 1;
+
+        if (questionText && optionA && optionB && correctOption) {
+            values.push(
+                `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+            );
+            params.push(
+                testId,
+                questionText,
+                optionA,
+                optionB,
+                optionC || '',
+                optionD || '',
+                correctOption.toString().replace(/[^A-D]/gi, '').toUpperCase(),
+                marks
+            );
+            insertedCount++;
+        }
+    }
+
+    return { values, params, insertedCount };
+};
+
 /**
  * POST /api/admin/upload/questions
  * Upload a bulk file of questions
@@ -122,12 +170,9 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
 
         let data = [];
 
-        // Check file type
-        // Note: mimetype for CSV can vary (text/csv, application/vnd.ms-excel, etc.)
         const isCsv = req.file.originalname.toLowerCase().endsWith('.csv') || req.file.mimetype === 'text/csv';
 
         if (isCsv) {
-            // Parse CSV using csv-parser
             const bufferStream = new stream.PassThrough();
             bufferStream.end(req.file.buffer);
 
@@ -139,7 +184,6 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
                     .on('error', reject);
             });
         } else {
-            // Parse Excel using xlsx
             try {
                 const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
                 const sheetName = workbook.SheetNames[0];
@@ -149,8 +193,6 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
                 return res.status(400).json({ success: false, message: 'Invalid Excel file format' });
             }
         }
-
-
 
         if (data.length === 0) {
             return res.status(400).json({ success: false, message: 'File is empty' });
@@ -164,26 +206,26 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
             'SELECT id FROM tests WHERE LOWER(title) = LOWER($1)',
             [testName]
         );
-        
+
         if (duplicateCheck.rows.length > 0) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ 
-                success: false, 
-                message: `A test with the name "${testName}" already exists. Please use a different name.` 
+            return res.status(400).json({
+                success: false,
+                message: `A test with the name "${testName}" already exists. Please use a different name.`
             });
         }
 
-        // 1. Create Test with additional details
+        // 1. Create Test
         const configuredDefaults = await getConfiguredDefaultJobDetails(client);
         const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
-        
+
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
             [
                 testName,
                 defaultJobRole,
-                defaultJobDescription, 
+                defaultJobDescription,
                 parseInt(duration) || 60,
                 parseInt(maxAttempts) || 1,
                 parseInt(passingPercentage) || 50,
@@ -218,46 +260,16 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
             }
         }
 
-        // 2. Insert Questions
-        let insertedCount = 0;
-        for (const row of data) {
-            // Normalize keys to handle case sensitivity and spaces
-            const getVal = (key) => {
-                const normalizedKey = key.toLowerCase().replace(/\s+/g, '');
-                for (const k of Object.keys(row)) {
-                    if (k.toLowerCase().replace(/\s+/g, '') === normalizedKey) return row[k];
-                }
-                return undefined;
-            };
+        // 2. ✅ FIX: Bulk insert all questions in a single query
+        const { values, params, insertedCount } = buildBulkQuestionInsert(data, testId);
 
-            const questionText = getVal('question');
-            const optionA = getVal('optiona');
-            const optionB = getVal('optionb');
-            const optionC = getVal('optionc');
-            const optionD = getVal('optiond');
-            const correctOption = getVal('correctoption'); // matches 'Correct Option' -> 'correctoption'
-            const marks = getVal('marks') || 1;
-
-            if (questionText && optionA && optionB && correctOption) {
-                await client.query(
-                    `INSERT INTO questions 
-                    (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                    [
-                        testId,
-                        questionText,
-                        optionA,
-                        optionB,
-                        optionC || '',
-                        optionD || '',
-                        correctOption.toString().replace(/[^A-D]/gi, '').toUpperCase(), // Clean input to just A, B, C, or D
-                        marks
-                    ]
-                );
-                insertedCount++;
-            } else {
-                // console.warn('Skipping invalid row:', row);
-            }
+        if (values.length > 0) {
+            await client.query(
+                `INSERT INTO questions 
+                (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
+                VALUES ${values.join(', ')}`,
+                params
+            );
         }
 
         await client.query('COMMIT');
@@ -285,7 +297,6 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
 /**
  * POST /api/admin/upload/question
  * Add a single question to a test
- * Body: { testId, questionText, optionA, optionB, optionC, optionD, correctOption, marks }
  */
 router.post('/question', verifyAdmin, async (req, res) => {
     const client = await pool.connect();
@@ -303,7 +314,6 @@ router.post('/question', verifyAdmin, async (req, res) => {
             marks
         } = req.body;
 
-        // Validation
         if (!questionText || !optionA || !optionB || !correctOption) {
             return res.status(400).json({
                 success: false,
@@ -311,7 +321,6 @@ router.post('/question', verifyAdmin, async (req, res) => {
             });
         }
 
-        // Validate correct option is A, B, C, or D
         const cleanCorrectOption = correctOption.toString().toUpperCase().trim();
         if (!['A', 'B', 'C', 'D'].includes(cleanCorrectOption)) {
             return res.status(400).json({
@@ -324,7 +333,6 @@ router.post('/question', verifyAdmin, async (req, res) => {
 
         let finalTestId = testId;
 
-        // If no testId provided, create a new test
         if (!finalTestId) {
             if (!testName) {
                 await client.query('ROLLBACK');
@@ -334,17 +342,16 @@ router.post('/question', verifyAdmin, async (req, res) => {
                 });
             }
 
-            // Check for duplicate test name
             const duplicateCheck = await client.query(
                 'SELECT id FROM tests WHERE LOWER(title) = LOWER($1)',
                 [testName]
             );
-            
+
             if (duplicateCheck.rows.length > 0) {
                 await client.query('ROLLBACK');
-                return res.status(400).json({ 
-                    success: false, 
-                    message: `A test with the name "${testName}" already exists. Please use a different name.` 
+                return res.status(400).json({
+                    success: false,
+                    message: `A test with the name "${testName}" already exists. Please use a different name.`
                 });
             }
 
@@ -354,7 +361,6 @@ router.post('/question', verifyAdmin, async (req, res) => {
             );
             finalTestId = testResult.rows[0].id;
         } else {
-            // Verify test exists
             const testCheck = await client.query('SELECT id FROM tests WHERE id = $1', [finalTestId]);
             if (testCheck.rows.length === 0) {
                 await client.query('ROLLBACK');
@@ -365,7 +371,6 @@ router.post('/question', verifyAdmin, async (req, res) => {
             }
         }
 
-        // Insert the question
         const result = await client.query(
             `INSERT INTO questions 
             (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
@@ -408,14 +413,12 @@ router.post('/question', verifyAdmin, async (req, res) => {
 /**
  * POST /api/upload/manual
  * Create a test with manually entered questions
- * Body: { testName, testDescription, questions: [{question, optiona, optionb, optionc, optiond, correctoption, marks}] }
  */
 router.post('/manual', verifyAdmin, async (req, res) => {
     const client = await pool.connect();
     try {
         const { testName, jobRoles, testDescription, duration, maxAttempts, passingPercentage, startDateTime, endDateTime, status, questions } = req.body;
 
-        // Parse jobRoles if needed
         let parsedJobRoles = [];
         if (jobRoles) {
             parsedJobRoles = Array.isArray(jobRoles) ? jobRoles : JSON.parse(jobRoles);
@@ -425,48 +428,40 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         console.log('=== MANUAL UPLOAD REQUEST ===');
         console.log('Test Name:', testName);
         console.log('Job Roles:', normalizedJobRoles);
-        console.log('Duration:', duration, 'Type:', typeof duration);
-        console.log('Max Attempts:', maxAttempts, 'Type:', typeof maxAttempts);
-        console.log('Passing Percentage:', passingPercentage, 'Type:', typeof passingPercentage);
-        console.log('Start DateTime:', startDateTime);
-        console.log('End DateTime:', endDateTime);
-        console.log('Status:', status);
         console.log('Questions count:', questions?.length);
 
         if (!testName || !questions || questions.length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Test name and at least one question are required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Test name and at least one question are required'
             });
         }
 
         await client.query('BEGIN');
 
-        // Check for duplicate test name
         const duplicateCheck = await client.query(
             'SELECT id FROM tests WHERE LOWER(title) = LOWER($1)',
             [testName]
         );
-        
+
         if (duplicateCheck.rows.length > 0) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ 
-                success: false, 
-                message: `A test with the name "${testName}" already exists. Please use a different name.` 
+            return res.status(400).json({
+                success: false,
+                message: `A test with the name "${testName}" already exists. Please use a different name.`
             });
         }
 
-        // Create test with additional details
         const configuredDefaults = await getConfiguredDefaultJobDetails(client);
         const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
-        
+
         const testResult = await client.query(
             `INSERT INTO tests (title, job_role, description, duration, max_attempts, passing_percentage, start_datetime, end_datetime, status) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
             [
                 testName,
                 defaultJobRole,
-                defaultJobDescription, 
+                defaultJobDescription,
                 parseInt(duration) || 60,
                 parseInt(maxAttempts) || 1,
                 parseInt(passingPercentage) || 50,
@@ -477,7 +472,6 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         );
         const testId = testResult.rows[0].id;
 
-        // Insert multiple job roles if provided
         if (normalizedJobRoles.length > 0) {
             await client.query(`
                 CREATE TABLE IF NOT EXISTS test_job_roles (
@@ -501,27 +495,38 @@ router.post('/manual', verifyAdmin, async (req, res) => {
             }
         }
 
-        // Insert questions
+        // ✅ FIX: Bulk insert manual questions in a single query
+        const manualValues = [];
+        const manualParams = [];
+        let paramIndex = 1;
         let insertedCount = 0;
+
         for (const q of questions) {
             if (q.question && q.optiona && q.optionb && q.correctoption) {
-                await client.query(
-                    `INSERT INTO questions 
-                    (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                    [
-                        testId,
-                        q.question,
-                        q.optiona,
-                        q.optionb,
-                        q.optionc || '',
-                        q.optiond || '',
-                        q.correctoption.toString().toUpperCase(),
-                        q.marks || 1
-                    ]
+                manualValues.push(
+                    `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+                );
+                manualParams.push(
+                    testId,
+                    q.question,
+                    q.optiona,
+                    q.optionb,
+                    q.optionc || '',
+                    q.optiond || '',
+                    q.correctoption.toString().toUpperCase(),
+                    q.marks || 1
                 );
                 insertedCount++;
             }
+        }
+
+        if (manualValues.length > 0) {
+            await client.query(
+                `INSERT INTO questions 
+                (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
+                VALUES ${manualValues.join(', ')}`,
+                manualParams
+            );
         }
 
         await client.query('COMMIT');
@@ -562,7 +567,6 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
 
         const { testName, jobRoles, testDescription, duration, maxAttempts, passingPercentage, startDateTime, endDateTime } = req.body;
 
-        // Parse jobRoles if it's a string (from FormData)
         let parsedJobRoles = [];
         if (jobRoles) {
             try {
@@ -577,33 +581,24 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
         console.log('Test ID:', testId);
         console.log('Test Name:', testName);
 
-        // Check if test exists and is draft
         const testCheck = await client.query(
             'SELECT id, status FROM tests WHERE id = $1',
             [testId]
         );
 
         if (testCheck.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Test not found'
-            });
+            return res.status(404).json({ success: false, message: 'Test not found' });
         }
 
         if (testCheck.rows[0].status !== 'draft') {
-            return res.status(400).json({
-                success: false,
-                message: 'Only draft tests can be edited'
-            });
+            return res.status(400).json({ success: false, message: 'Only draft tests can be edited' });
         }
 
         let data = [];
 
-        // Check file type
         const isCsv = req.file.originalname.toLowerCase().endsWith('.csv') || req.file.mimetype === 'text/csv';
 
         if (isCsv) {
-            // Parse CSV
             const bufferStream = new stream.PassThrough();
             bufferStream.end(req.file.buffer);
 
@@ -615,7 +610,6 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
                     .on('error', reject);
             });
         } else {
-            // Parse Excel
             try {
                 const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
                 const sheetName = workbook.SheetNames[0];
@@ -630,13 +624,11 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
             return res.status(400).json({ success: false, message: 'File is empty' });
         }
 
-        // Start Transaction
         await client.query('BEGIN');
 
-        // Update test details
         const configuredDefaults = await getConfiguredDefaultJobDetails(client);
         const { job_role: defaultJobRole, job_description: defaultJobDescription } = getPrimaryJobDetails(normalizedJobRoles, testDescription, configuredDefaults);
-        
+
         await client.query(
             `UPDATE tests 
              SET title = $1, job_role = $2, description = $3, duration = $4, max_attempts = $5, 
@@ -645,7 +637,7 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
             [
                 testName,
                 defaultJobRole,
-                defaultJobDescription, 
+                defaultJobDescription,
                 parseInt(duration) || 60,
                 parseInt(maxAttempts) || 1,
                 parseInt(passingPercentage) || 50,
@@ -655,7 +647,6 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
             ]
         );
 
-        // Update job roles
         if (normalizedJobRoles.length > 0) {
             await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
 
@@ -671,46 +662,19 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
             await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
         }
 
-        // Delete all existing questions
+        // Delete existing questions
         await client.query('DELETE FROM questions WHERE test_id = $1', [testId]);
 
-        // Insert new questions from file
-        let insertedCount = 0;
-        for (const row of data) {
-            const getVal = (key) => {
-                const normalizedKey = key.toLowerCase().replace(/\s+/g, '');
-                for (const k of Object.keys(row)) {
-                    if (k.toLowerCase().replace(/\s+/g, '') === normalizedKey) return row[k];
-                }
-                return undefined;
-            };
+        // ✅ FIX: Bulk insert updated questions in a single query
+        const { values, params, insertedCount } = buildBulkQuestionInsert(data, testId);
 
-            const questionText = getVal('question');
-            const optionA = getVal('optiona');
-            const optionB = getVal('optionb');
-            const optionC = getVal('optionc');
-            const optionD = getVal('optiond');
-            const correctOption = getVal('correctoption');
-            const marks = getVal('marks') || 1;
-
-            if (questionText && optionA && optionB && correctOption) {
-                await client.query(
-                    `INSERT INTO questions 
-                    (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                    [
-                        testId,
-                        questionText,
-                        optionA,
-                        optionB,
-                        optionC || '',
-                        optionD || '',
-                        correctOption.toString().replace(/[^A-D]/gi, '').toUpperCase(),
-                        marks
-                    ]
-                );
-                insertedCount++;
-            }
+        if (values.length > 0) {
+            await client.query(
+                `INSERT INTO questions 
+                (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks) 
+                VALUES ${values.join(', ')}`,
+                params
+            );
         }
 
         await client.query('COMMIT');
@@ -738,7 +702,6 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
 /**
  * POST /api/upload/students
  * Bulk upload students from CSV file
- * CSV columns: fullname, contact, email, institute, password (optional - will be auto-generated)
  */
 router.post('/students', verifyAdmin, upload.single('file'), async (req, res) => {
     const client = await pool.connect();
@@ -756,7 +719,6 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
         let data = [];
         const isCsv = req.file.originalname.toLowerCase().endsWith('.csv') || req.file.mimetype === 'text/csv';
 
-        // Parse file
         if (isCsv) {
             const bufferStream = new stream.PassThrough();
             bufferStream.end(req.file.buffer);
@@ -785,7 +747,6 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
 
         console.log(`Processing ${data.length} students...`);
 
-        // Validate columns
         const requiredColumns = ['fullname', 'email', 'institute'];
         const firstRow = data[0];
         const columns = Object.keys(firstRow).map(k => k.toLowerCase().trim());
@@ -802,7 +763,6 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
 
         await client.query('BEGIN');
 
-        // Ensure students table has all required columns
         await client.query(`
             ALTER TABLE students 
             ADD COLUMN IF NOT EXISTS institute VARCHAR(255),
@@ -810,12 +770,10 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
             ADD COLUMN IF NOT EXISTS roll_number VARCHAR(100);
         `);
 
-        // Remove unique constraint from roll_number if it exists
         await client.query(`
             ALTER TABLE students DROP CONSTRAINT IF EXISTS students_roll_number_key;
         `);
 
-        // Make firebase_uid nullable temporarily for bulk upload
         await client.query(`
             ALTER TABLE students ALTER COLUMN firebase_uid DROP NOT NULL;
         `);
@@ -829,20 +787,17 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
             try {
-                // Normalize column names (handle different case and spacing)
                 const normalizedRow = {};
                 Object.keys(row).forEach(key => {
                     const normalizedKey = key.toLowerCase().trim();
                     normalizedRow[normalizedKey] = row[key];
                 });
 
-                // Extract data with flexible column name matching
                 const fullname = normalizedRow.fullname || normalizedRow['full name'] || normalizedRow.name || '';
                 const email = normalizedRow.email || normalizedRow['email address'] || '';
                 const institute = normalizedRow.institute || normalizedRow.university || normalizedRow.college || '';
                 const contact = normalizedRow.contact || normalizedRow.phone || normalizedRow.mobile || '';
 
-                // Validate required fields
                 if (!fullname || !email || !institute) {
                     results.errors.push({
                         row: i + 1,
@@ -852,41 +807,28 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
                     continue;
                 }
 
-                // Validate email format
                 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
                 if (!emailRegex.test(email)) {
-                    results.errors.push({
-                        row: i + 1,
-                        email,
-                        error: 'Invalid email format'
-                    });
+                    results.errors.push({ row: i + 1, email, error: 'Invalid email format' });
                     continue;
                 }
 
-                // Generate password: firstname@2026
                 const firstName = fullname.trim().split(' ')[0];
                 const password = `${firstName}@2026`;
 
-                // Check if student already exists in database
                 const existingStudent = await client.query(
                     'SELECT id, firebase_uid, email FROM students WHERE email = $1',
                     [email]
                 );
 
                 if (existingStudent.rows.length > 0) {
-                    results.errors.push({
-                        row: i + 1,
-                        email,
-                        error: 'Student with this email already exists'
-                    });
+                    results.errors.push({ row: i + 1, email, error: 'Student with this email already exists' });
                     continue;
                 }
 
-                // Normalize institute name
                 const normalizedInstitute = institute.trim().toLowerCase();
                 const displayInstitute = institute.trim();
 
-                // Ensure institute exists in institutes table
                 await client.query(
                     `INSERT INTO institutes (name, display_name, created_by)
                      VALUES ($1, $2, 'bulk_upload')
@@ -894,7 +836,6 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
                     [normalizedInstitute, displayInstitute]
                 );
 
-                // Create Firebase user
                 let firebaseUid = null;
                 try {
                     const firebaseUser = await admin.auth().createUser({
@@ -907,30 +848,20 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
                     console.log(`✅ Firebase user created: ${email}`);
                 } catch (firebaseError) {
                     if (firebaseError.code === 'auth/email-already-exists') {
-                        // Try to get existing Firebase user
                         try {
                             const existingFirebaseUser = await admin.auth().getUserByEmail(email);
                             firebaseUid = existingFirebaseUser.uid;
                             console.log(`⚠️  Using existing Firebase user: ${email}`);
                         } catch (getError) {
-                            results.errors.push({
-                                row: i + 1,
-                                email,
-                                error: `Firebase error: ${firebaseError.message}`
-                            });
+                            results.errors.push({ row: i + 1, email, error: `Firebase error: ${firebaseError.message}` });
                             continue;
                         }
                     } else {
-                        results.errors.push({
-                            row: i + 1,
-                            email,
-                            error: `Firebase error: ${firebaseError.message}`
-                        });
+                        results.errors.push({ row: i + 1, email, error: `Firebase error: ${firebaseError.message}` });
                         continue;
                     }
                 }
 
-                // Insert student into database
                 const studentResult = await client.query(
                     `INSERT INTO students (firebase_uid, full_name, email, institute, phone, roll_number, created_at, updated_at)
                      VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -938,9 +869,6 @@ router.post('/students', verifyAdmin, upload.single('file'), async (req, res) =>
                     [firebaseUid, fullname, email, normalizedInstitute, contact || null, email]
                 );
 
-                const student = studentResult.rows[0];
-
-                // Send credentials email (non-blocking)
                 sendCredentialsEmail(email, fullname, password, displayInstitute)
                     .then(result => {
                         if (result.success) {
