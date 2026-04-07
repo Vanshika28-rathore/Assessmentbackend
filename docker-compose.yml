@@ -1,0 +1,100 @@
+version: '3.9'
+
+# ============================================================
+# MCQ Exam Portal - Docker Compose (EC2 Production)
+# ============================================================
+# Usage:
+#   docker-compose up -d --build
+#   docker-compose logs -f backend
+#   docker-compose down
+# ============================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcq-backend:latest
+    container_name: mcq-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+
+    # -------------------------------------------------------
+    # CRITICAL: Bind-mount the Docker socket so the backend
+    # can spawn `docker run` containers for code execution.
+    # This gives the container access to the host's Docker
+    # daemon — required for the coding sandbox feature.
+    # -------------------------------------------------------
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent logs directory on the host
+      - ./logs:/app/logs
+      # Persistent uploads directory on the host
+      - ./uploads:/app/uploads
+      # Mount the Firebase service account key at runtime
+      # (Never bake secrets into the image)
+      - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
+
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+
+      # PostgreSQL — set via EC2 environment / AWS Secrets Manager
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+
+      # Firebase (injected from host .env)
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
+      FIREBASE_PRIVATE_KEY_ID: ${FIREBASE_PRIVATE_KEY_ID}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL}
+      FIREBASE_CLIENT_ID: ${FIREBASE_CLIENT_ID}
+
+      # CORS — set to your CloudFront domain
+      FRONTEND_URL: ${FRONTEND_URL}
+
+      # Email
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL}
+
+      # Code execution concurrency (Docker containers in parallel)
+      CODE_EXEC_CONCURRENCY: ${CODE_EXEC_CONCURRENCY:-10}
+
+      # Redis (optional — for future queue support)
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_HOST: ${REDIS_HOST:-}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+    # Health check — restarts if /health fails 3 times
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits — prevent a runaway Docker container from
+    # consuming the entire EC2 instance
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+        reservations:
+          memory: 512m
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
