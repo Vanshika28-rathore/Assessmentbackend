@@ -374,7 +374,7 @@ class CodeExecutionService {
         dockerPath = filepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/code.py" python:3.11-alpine python /app/code.py`;
+      const command = `docker run --rm -v "${dockerPath}:/app/code.py" python:3.11-alpine python /app/code.py`;
       console.log(`Running: ${command.substring(0, 100)}...`);
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
@@ -416,7 +416,7 @@ class CodeExecutionService {
           dockerPath = filepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
         }
 
-        const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/code.js" node:18-alpine node /app/code.js`;
+        const command = `docker run --rm -v "${dockerPath}:/app/code.js" node:18-alpine node /app/code.js`;
         console.log(`Running: ${command.substring(0, 100)}...`);
 
         const { stdout, stderr } = await this.runDockerCommand(command, {
@@ -459,7 +459,7 @@ class CodeExecutionService {
         dockerPath = filepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/Main.java" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && java Main"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/Main.java" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && java Main"`;
       console.log(`Running: ${command.substring(0, 100)}...`);
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
@@ -501,7 +501,7 @@ class CodeExecutionService {
         dockerPath = filepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/program.cpp" gcc:latest sh -c "cd /app && g++ program.cpp -o program && ./program"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/program.cpp" gcc:latest sh -c "cd /app && g++ program.cpp -o program && ./program"`;
       console.log(`Running: ${command.substring(0, 100)}...`);
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
@@ -636,7 +636,7 @@ class CodeExecutionService {
         inputDockerPath = inputFilepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/code.py" -v "${inputDockerPath}:/app/input.txt" python:3.11-alpine sh -c "cat /app/input.txt | python /app/code.py"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/code.py" -v "${inputDockerPath}:/app/input.txt" python:3.11-alpine sh -c "cat /app/input.txt | python /app/code.py"`;
       
       console.log(`Running command: ${command.substring(0, 150)}...`);
       
@@ -692,7 +692,7 @@ class CodeExecutionService {
         inputDockerPath = inputFilepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/code.js" -v "${inputDockerPath}:/app/input.txt" node:18-alpine sh -c "cat /app/input.txt | node /app/code.js"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/code.js" -v "${inputDockerPath}:/app/input.txt" node:18-alpine sh -c "cat /app/input.txt | node /app/code.js"`;
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
         timeout: 10000,
@@ -745,7 +745,7 @@ class CodeExecutionService {
         inputDockerPath = inputFilepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/Main.java" -v "${inputDockerPath}:/app/input.txt" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && cat /app/input.txt | java Main"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/Main.java" -v "${inputDockerPath}:/app/input.txt" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && cat /app/input.txt | java Main"`;
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
         timeout: 15000,
@@ -798,7 +798,7 @@ class CodeExecutionService {
         inputDockerPath = inputFilepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm --memory=256m -v "${dockerPath}:/app/program.cpp" -v "${inputDockerPath}:/app/input.txt" gcc:latest sh -c "cd /app && g++ program.cpp -o program && cat /app/input.txt | ./program"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/program.cpp" -v "${inputDockerPath}:/app/input.txt" gcc:latest sh -c "cd /app && g++ program.cpp -o program && cat /app/input.txt | ./program"`;
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
         timeout: 15000,
