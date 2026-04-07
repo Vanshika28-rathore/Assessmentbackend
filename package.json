@@ -11,7 +11,7 @@
     "verify": "node verify-setup.js",
     "verify-setup": "node verify-setup.js",
     "load-dummy-data": "node load-dummy-data.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop mcq-backend",
     "pm2:restart": "pm2 restart mcq-backend",
@@ -63,6 +63,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "jest": "^30.3.0",
     "nodemon": "^3.0.3",
     "pm2": "^5.4.3"
   }

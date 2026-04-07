@@ -1,0 +1,38 @@
+name: Deploy Backend
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # JOB 1: THE GUARDRAIL
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Tests
+        run: npm test
+
+  # JOB 2: THE DEPLOYMENT
+  deploy:
+    needs: test  # <-- This tells GitHub: "DO NOT run this if the test job fails!"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/Assessment-backend
+            git pull origin main
+            npm ci --production
+            pm2 restart backend
+            pm2 save

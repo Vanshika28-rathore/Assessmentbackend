@@ -7,6 +7,7 @@ const { ExpressPeerServer } = require('peer');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
+
 // Import configurations
 const { pool } = require('./config/db');
 // const { redisClient, cache } = require('./config/redis'); // DISABLED: Redis causing connection issues
@@ -19,7 +20,7 @@ const adminAuthRoutes = require('./routes/adminAuth');
 const uploadRoutes = require('./routes/upload');
 const studentRoutes = require('./routes/student');
 const exportRoutes = require('./routes/export');
-const testRoutes = require('./routes/test');
+const testRoutes = require('./routes/testRoutes');
 const healthRoutes = require('./routes/health');
 const institutesRoutes = require('./routes/institutes');
 const proctoringRoutes = require('./routes/proctoring');
@@ -59,10 +60,14 @@ const io = new Server(server, {
     },
     pingTimeout: 60000,
     pingInterval: 25000,
-    transports: ['polling', 'websocket'],
+    transports: ['polling'],
     allowEIO3: true,
     upgradeTimeout: 30000, // Allow 30 seconds for transport upgrade
-    maxHttpBufferSize: 1e8 // 100 MB
+    maxHttpBufferSize: 1e8, // 100 MB
+    allowRequest: (req, callback) => {
+        callback(null, true); // Allow all requests
+    }
+
 });
 const PORT = process.env.PORT || 5000;
 
@@ -78,6 +83,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
 }));
 
 // Middleware
+
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: {
@@ -95,11 +101,12 @@ app.use(helmet({
 // CORS configuration - Allow multiple origins
 const allowedOrigins = [
     process.env.FRONTEND_URL,
-    process.env.CLIENT_URL,
+   process.env.CLIENT_URL,
     'http://localhost:5173',
     'http://localhost:5174',
     'https://assessment-shnoor-com.onrender.com',
-    'https://assessments.shnoor.com'
+    'https://assessments.shnoor.com',
+    'https://d3v3kobu4jrvb4.cloudfront.net'
 ].filter(Boolean); // Remove undefined values
 
 app.use(cors({
@@ -134,7 +141,7 @@ app.use('/api', apiLimiter); // General API endpoints (fallback)
 app.set('io', io);
 
 // API Routes
-app.use('/api', checkMaintenance, authRoutes); // Protect student auth with maintenance check
+app.use('/api', authRoutes); // Protect student auth with maintenance check
 app.use('/api/admin', adminAuthRoutes); // Admin bypasses maintenance
 app.use('/api/upload', checkMaintenance, uploadRoutes);
 app.use('/api/student', checkMaintenance, studentRoutes);
@@ -160,6 +167,10 @@ app.get('/', (req, res) => {
 
 
 const { WebSocketServer } = require('ws');
+
+app.get("/", async (request, reply) => {
+  return { message: "Backend running" };
+});
 
 // PeerJS signaling server
 const peerServer = ExpressPeerServer(server, {
@@ -1745,3 +1756,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 module.exports = app;
+
+
+
+
