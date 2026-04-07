@@ -47,6 +47,7 @@ router.get('/test/:testId', verifyAdmin, async (req, res) => {
                     description: question.description,
                     timeLimit: parseFloat(question.time_limit),
                     memoryLimit: question.memory_limit,
+                    marks: question.marks || 10,
                     publicTestCases,
                     hiddenTestCases
                 };
@@ -91,10 +92,10 @@ router.post('/test/:testId', verifyAdmin, async (req, res) => {
             // Insert coding question
             const questionResult = await client.query(
                 `INSERT INTO coding_questions 
-                 (test_id, title, description, time_limit, memory_limit, question_order)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                 (test_id, title, description, time_limit, memory_limit, marks, question_order)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  RETURNING id`,
-                [testId, question.title, question.description, question.timeLimit, question.memoryLimit, i]
+                [testId, question.title, question.description, question.timeLimit, question.memoryLimit, question.marks || 10, i]
             );
 
             const codingQuestionId = questionResult.rows[0].id;
@@ -206,6 +207,21 @@ router.post('/submit', async (req, res) => {
             });
         }
 
+        // Get the coding question to retrieve marks
+        const questionResult = await pool.query(
+            `SELECT marks FROM coding_questions WHERE id = $1`,
+            [codingQuestionId]
+        );
+
+        if (questionResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Coding question not found'
+            });
+        }
+
+        const totalMarks = questionResult.rows[0].marks || 10;
+
         // Get all test cases (public + hidden) for this question
         const testCasesResult = await pool.query(
             `SELECT input, output FROM coding_test_cases 
@@ -261,11 +277,14 @@ router.post('/submit', async (req, res) => {
         const totalCount = data.summary.totalTestCases;
         const status = data.passed ? 'passed' : 'failed';
 
+        // Calculate marks earned proportionally based on test cases passed
+        const marksEarned = Math.round((passedCount / totalCount) * totalMarks);
+
         // Save submission with results to database
         await pool.query(
             `INSERT INTO student_coding_submissions 
-             (student_id, coding_question_id, test_id, code, language, status, test_cases_passed, total_test_cases)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (student_id, coding_question_id, test_id, code, language, status, test_cases_passed, total_test_cases, marks_earned)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (student_id, coding_question_id, test_id)
              DO UPDATE SET 
                 code = $4, 
@@ -273,8 +292,9 @@ router.post('/submit', async (req, res) => {
                 status = $6, 
                 test_cases_passed = $7, 
                 total_test_cases = $8,
+                marks_earned = $9,
                 submitted_at = CURRENT_TIMESTAMP`,
-            [studentId, codingQuestionId, testId, code, language, status, passedCount, totalCount]
+            [studentId, codingQuestionId, testId, code, language, status, passedCount, totalCount, marksEarned]
         );
 
         res.json({
@@ -285,6 +305,8 @@ router.post('/submit', async (req, res) => {
                 testCasesPassed: passedCount,
                 totalTestCases: totalCount,
                 percentage: data.summary.percentage,
+                marksEarned: marksEarned,
+                totalMarks: totalMarks,
                 testResults: data.testResults
             }
         });

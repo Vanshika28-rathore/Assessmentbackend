@@ -109,9 +109,10 @@ router.get('/', verifyAdmin, async (req, res) => {
                 t.max_attempts,
                 t.start_datetime,
                 t.end_datetime,
-                COUNT(q.id) as question_count
+                (COUNT(DISTINCT q.id) + COUNT(DISTINCT cq.id)) as question_count
             FROM tests t
             LEFT JOIN questions q ON t.id = q.test_id
+            LEFT JOIN coding_questions cq ON t.id = cq.test_id
             GROUP BY t.id, t.title, t.description, t.job_role, t.created_at, t.status, t.duration, t.max_attempts, t.start_datetime, t.end_datetime
             ORDER BY t.created_at DESC
         `);
@@ -343,6 +344,7 @@ router.get('/:id', verifyAdmin, async (req, res) => {
                         description: question.description,
                         timeLimit: parseFloat(question.time_limit),
                         memoryLimit: question.memory_limit,
+                        marks: question.marks || 10,
                         publicTestCases,
                         hiddenTestCases
                     };

@@ -177,7 +177,7 @@ const createTables = async () => {
 
         // Add missing columns if they don't exist (for existing databases)
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN 
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='admins' AND column_name='phone') THEN
@@ -191,7 +191,7 @@ const createTables = async () => {
                               WHERE table_name='admins' AND column_name='updated_at') THEN
                     ALTER TABLE admins ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
                 END IF;
-            END $;
+            END $$;
         `);
 
         // 3. Create Tests Table
@@ -263,24 +263,24 @@ const createTables = async () => {
 
         // Add format column if it doesn't exist (for existing databases)
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN 
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='questions' AND column_name='format') THEN
                     ALTER TABLE questions ADD COLUMN format VARCHAR(20) DEFAULT 'paragraph';
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Add check constraint for format values
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'questions_format_check') THEN
                     ALTER TABLE questions ADD CONSTRAINT questions_format_check 
                     CHECK (format IN ('paragraph', 'line', 'code'));
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Create index on test_id for faster lookups
@@ -496,7 +496,7 @@ const createTables = async () => {
 
         // Add check constraints for message_type and priority
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'proctoring_messages_message_type_check') THEN
                     ALTER TABLE proctoring_messages ADD CONSTRAINT proctoring_messages_message_type_check 
@@ -506,7 +506,7 @@ const createTables = async () => {
                     ALTER TABLE proctoring_messages ADD CONSTRAINT proctoring_messages_priority_check 
                     CHECK (priority IN ('low', 'medium', 'high'));
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Create indices for proctoring_messages
@@ -520,12 +520,12 @@ const createTables = async () => {
         // Create trigger function for proctoring_messages updated_at
         await client.query(`
             CREATE OR REPLACE FUNCTION update_proctoring_messages_timestamp()
-            RETURNS TRIGGER AS $
+            RETURNS TRIGGER AS $$
             BEGIN
                 NEW.updated_at = CURRENT_TIMESTAMP;
                 RETURN NEW;
             END;
-            $ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql;
         `);
 
         // Create trigger for proctoring_messages
@@ -559,7 +559,7 @@ const createTables = async () => {
 
         // Add check constraints for status and recommendation
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'interviews_status_check') THEN
                     ALTER TABLE interviews ADD CONSTRAINT interviews_status_check 
@@ -569,7 +569,7 @@ const createTables = async () => {
                     ALTER TABLE interviews ADD CONSTRAINT interviews_recommendation_check 
                     CHECK (recommendation IN ('selected', 'rejected', 'on_hold'));
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Create indices for interviews
@@ -582,12 +582,12 @@ const createTables = async () => {
         // Create trigger function for interviews updated_at
         await client.query(`
             CREATE OR REPLACE FUNCTION update_interviews_updated_at()
-            RETURNS TRIGGER AS $
+            RETURNS TRIGGER AS $$
             BEGIN
                 NEW.updated_at = CURRENT_TIMESTAMP;
                 RETURN NEW;
             END;
-            $ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql;
         `);
 
         // Create trigger for interviews
@@ -842,13 +842,13 @@ const createTables = async () => {
 
         // Add check constraint for sender_type
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'interview_chat_messages_sender_type_check') THEN
                     ALTER TABLE interview_chat_messages ADD CONSTRAINT interview_chat_messages_sender_type_check 
                     CHECK (sender_type IN ('admin', 'student'));
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Create indices for interview_chat_messages
@@ -882,7 +882,7 @@ const createTables = async () => {
 
         // Add columns to results table for forced terminations
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                WHERE table_name='results' AND column_name='termination_reason') THEN
@@ -898,7 +898,7 @@ const createTables = async () => {
                                WHERE table_name='results' AND column_name='is_forced_termination') THEN
                     ALTER TABLE results ADD COLUMN is_forced_termination BOOLEAN DEFAULT FALSE;
                 END IF;
-            END $;
+            END $$;
         `);
 
         await client.query(`CREATE INDEX IF NOT EXISTS idx_results_termination_reason ON results(termination_reason) WHERE termination_reason IS NOT NULL;`);
@@ -1017,25 +1017,25 @@ const createTables = async () => {
         // 30. Add job_application_id to test_attempts (if not exists)
         console.log('Adding job_application_id to test_attempts...');
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN 
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='test_attempts' AND column_name='job_application_id') THEN
                     ALTER TABLE test_attempts ADD COLUMN job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL;
                 END IF;
-            END $;
+            END $$;
         `);
 
         // Drop old unique constraint and add new one with job_application_id
         await client.query(`ALTER TABLE test_attempts DROP CONSTRAINT IF EXISTS test_attempts_student_id_test_id_key;`);
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'test_attempts_student_test_application_unique') THEN
                     ALTER TABLE test_attempts ADD CONSTRAINT test_attempts_student_test_application_unique 
                     UNIQUE (student_id, test_id, job_application_id);
                 END IF;
-            END $;
+            END $$;
         `);
 
         await client.query(`CREATE INDEX IF NOT EXISTS idx_test_attempts_job_application ON test_attempts(job_application_id);`);
@@ -1043,7 +1043,7 @@ const createTables = async () => {
         // 31. Add session_token and exam_started to exam_progress (if not exists)
         console.log('Adding session_token and exam_started to exam_progress...');
         await client.query(`
-            DO $ 
+            DO $$ 
             BEGIN 
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='exam_progress' AND column_name='session_token') THEN
@@ -1057,7 +1057,7 @@ const createTables = async () => {
                               WHERE table_name='exam_progress' AND column_name='exam_started') THEN
                     ALTER TABLE exam_progress ADD COLUMN exam_started BOOLEAN DEFAULT FALSE;
                 END IF;
-            END $;
+            END $$;
         `);
 
         await client.query(`CREATE INDEX IF NOT EXISTS idx_exam_progress_session_token ON exam_progress(session_token);`);

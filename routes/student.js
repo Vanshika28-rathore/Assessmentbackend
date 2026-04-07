@@ -60,7 +60,8 @@ router.get('/tests', verifySession, async (req, res) => {
                 t.start_datetime,
                 t.end_datetime,
                 COALESCE(t.is_mock_test, false) as is_mock_test,
-                (SELECT COUNT(*) FROM questions q WHERE q.test_id = t.id) as question_count,
+                ((SELECT COUNT(*) FROM questions q WHERE q.test_id = t.id) + 
+                 (SELECT COUNT(*) FROM coding_questions cq WHERE cq.test_id = t.id)) as question_count,
                 ta.assigned_at,
                 (SELECT COUNT(*) FROM results r
                  INNER JOIN exams e ON r.exam_id = e.id
@@ -801,40 +802,39 @@ router.post('/submit-exam', async (req, res) => {
             });
         });
 
-        // DISABLED: CODE EXECUTION FEATURE
-        // 3.5. Add marks from coding questions
-        // try {
-        //     // Get all coding questions for this test
-        //     const codingQuestionsResult = await pool.query(
-        //         `SELECT id, marks FROM coding_questions WHERE test_id = $1`,
-        //         [testId]
-        //     );
+        // CODE EXECUTION FEATURE - Add marks from coding questions
+        try {
+            // Get all coding questions for this test
+            const codingQuestionsResult = await pool.query(
+                `SELECT id, marks FROM coding_questions WHERE test_id = $1`,
+                [testId]
+            );
 
-        //     // Get student's coding submissions
-        //     const codingSubmissionsResult = await pool.query(
-        //         `SELECT coding_question_id, marks_earned 
-        //          FROM student_coding_submissions 
-        //          WHERE student_id = $1 AND test_id = $2`,
-        //         [studentId, testId]
-        //     );
+            // Get student's coding submissions
+            const codingSubmissionsResult = await pool.query(
+                `SELECT coding_question_id, marks_earned 
+                 FROM student_coding_submissions 
+                 WHERE student_id = $1 AND test_id = $2`,
+                [studentId, testId]
+            );
 
-        //     // Add coding question marks to total
-        //     codingQuestionsResult.rows.forEach(cq => {
-        //         totalMarks += cq.marks || 10;
+            // Add coding question marks to total
+            codingQuestionsResult.rows.forEach(cq => {
+                totalMarks += cq.marks || 10;
                 
-        //         // Find if student submitted this coding question
-        //         const submission = codingSubmissionsResult.rows.find(s => s.coding_question_id === cq.id);
-        //         if (submission && submission.marks_earned) {
-        //             marksObtained += parseFloat(submission.marks_earned);
-        //         }
-        //     });
+                // Find if student submitted this coding question
+                const submission = codingSubmissionsResult.rows.find(s => s.coding_question_id === cq.id);
+                if (submission && submission.marks_earned) {
+                    marksObtained += parseFloat(submission.marks_earned);
+                }
+            });
 
-        //     console.log('Coding questions total marks:', codingQuestionsResult.rows.reduce((sum, cq) => sum + (cq.marks || 10), 0));
-        //     console.log('Coding questions marks obtained:', codingSubmissionsResult.rows.reduce((sum, s) => sum + parseFloat(s.marks_earned || 0), 0));
-        // } catch (codingError) {
-        //     console.error('Error calculating coding question marks (table may not exist):', codingError.message);
-        //     // Continue with MCQ marks only if coding marks calculation fails
-        // }
+            console.log('Coding questions total marks:', codingQuestionsResult.rows.reduce((sum, cq) => sum + (cq.marks || 10), 0));
+            console.log('Coding questions marks obtained:', codingSubmissionsResult.rows.reduce((sum, s) => sum + parseFloat(s.marks_earned || 0), 0));
+        } catch (codingError) {
+            console.error('Error calculating coding question marks (table may not exist):', codingError.message);
+            // Continue with MCQ marks only if coding marks calculation fails
+        }
 
         // 4. Calculate percentage and determine pass/fail (50% passing criteria)
         const percentage = (marksObtained / totalMarks) * 100;
