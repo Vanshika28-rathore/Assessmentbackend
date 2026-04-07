@@ -47,7 +47,7 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.0",
     "multer": "^2.0.2",
-    "p-limit": "^5.0.0",
+    "p-limit": "^4.0.0",
     "pdfkit": "^0.17.2",
     "pdfkit-table": "^0.1.99",
     "peer": "^1.0.2",

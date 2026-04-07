@@ -1,0 +1,34 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.example
+logs
+*.log
+.git
+.gitignore
+.DS_Store
+Thumbs.db
+
+# Dev scripts (not needed in production image)
+*.test.js
+test-*.js
+seed-*.js
+check-*.js
+create-*.js
+fix-*.js
+generate-*.js
+run-*.js
+run_*.js
+verify-*.js
+setup-database.js
+setup-system-settings.js
+load-dummy-data.js
+
+# Docker artifacts
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Sensitive files - never bake into image
+serviceAccountKey.json

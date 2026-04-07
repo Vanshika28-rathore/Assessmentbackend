@@ -1,0 +1,1567 @@
+CREATE TABLE IF NOT EXISTS students (
+    id SERIAL PRIMARY KEY,
+    firebase_uid VARCHAR(255) UNIQUE NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    roll_number VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_students_firebase_uid ON students(firebase_uid);
+CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);
+CREATE INDEX IF NOT EXISTS idx_students_roll_number ON students(roll_number);
+
+CREATE TABLE IF NOT EXISTS admins (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tests (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    duration INTEGER DEFAULT 60, -- Duration in minutes
+    max_attempts INTEGER DEFAULT 1, -- Number of attempts allowed
+    start_datetime TIMESTAMP, -- Exam start date and time
+    end_datetime TIMESTAMP, -- Exam end date and time
+    status VARCHAR(20) DEFAULT 'draft', -- Test status: draft, published, archived
+    is_published BOOLEAN DEFAULT false, -- Legacy field for backward compatibility
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS questions (
+    id SERIAL PRIMARY KEY,
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    question_text TEXT NOT NULL,
+    option_a TEXT NOT NULL,
+    option_b TEXT NOT NULL,
+    option_c TEXT,
+    option_d TEXT,
+    correct_option VARCHAR(1) NOT NULL,
+    marks INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_questions_test_id ON questions(test_id);
+
+CREATE TABLE IF NOT EXISTS exams (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    date DATE DEFAULT CURRENT_DATE,
+    duration INTEGER DEFAULT 60,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS results (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    marks_obtained NUMERIC(10, 2) NOT NULL,
+    total_marks NUMERIC(10, 2) NOT NULL,
+    status VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_results_student_id ON results(student_id);
+CREATE INDEX IF NOT EXISTS idx_results_exam_id ON results(exam_id);
+
+
+CREATE TABLE IF NOT EXISTS student_responses (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    question_id INTEGER REFERENCES questions(id) ON DELETE CASCADE,
+    selected_option VARCHAR(1),
+    is_correct BOOLEAN,
+    marks_obtained INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(student_id, question_id)
+);
+
+
+CREATE TABLE IF NOT EXISTS test_attempts (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    total_marks INTEGER DEFAULT 0,
+    obtained_marks INTEGER DEFAULT 0,
+    percentage DECIMAL(5,2),
+    time_taken INTEGER,
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(student_id, test_id)
+);
+
+
+CREATE TABLE IF NOT EXISTS exam_progress (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    answers JSONB,
+    time_remaining INTEGER,
+    tab_switch_count INTEGER DEFAULT 0,
+    last_saved TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(student_id, test_id)
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_exam_progress_student_test ON exam_progress(student_id, test_id);
+
+
+INSERT INTO admins (email, password_hash, full_name)
+VALUES (
+    'admin@assessments.com',
+    '$2b$10$zOf0vpRPQFSv29FVcWM/HuBjvdGaOVhQny1gUydko2vHMnH3lUP7W',
+    'System Administrator'
+)
+ON CONFLICT (email) DO UPDATE 
+SET password_hash = EXCLUDED.password_hash,
+    full_name = EXCLUDED.full_name;
+
+-- Add job_role column to tests table
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS job_role TEXT;
+
+-- Update description column to remove character limit (if it has one)
+ALTER TABLE tests 
+ALTER COLUMN description TYPE TEXT;
+
+-- Add comment to explain the columns
+COMMENT ON COLUMN tests.job_role IS 'Job role/position';
+COMMENT ON COLUMN tests.description IS 'Detailed description of the test and job requirements';
+
+select * from admins;
+
+
+
+
+
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS job_role TEXT;
+
+ALTER TABLE tests 
+ALTER COLUMN description TYPE TEXT;
+
+
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS job_role TEXT;
+
+-- Update description column to remove character limit (if it has one)
+ALTER TABLE tests 
+ALTER COLUMN description TYPE TEXT;
+
+-- Add comment to explain the columns
+COMMENT ON COLUMN tests.job_role IS 'Job role/position for which this assessment is designed';
+COMMENT ON COLUMN tests.description IS 'Detailed description of the test and job requirements';
+
+
+
+
+
+-- Migration: Add student profile fields
+-- Description: Adds phone, address, college_name, course, and specialization columns to the students table.
+
+ALTER TABLE students 
+ADD COLUMN IF NOT EXISTS phone VARCHAR(20),
+ADD COLUMN IF NOT EXISTS address TEXT,
+ADD COLUMN IF NOT EXISTS college_name VARCHAR(255),
+ADD COLUMN IF NOT EXISTS course VARCHAR(100),
+ADD COLUMN IF NOT EXISTS specialization VARCHAR(100);
+
+
+
+
+
+CREATE TABLE IF NOT EXISTS test_job_roles (
+    id SERIAL PRIMARY KEY,
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    job_role VARCHAR(255) NOT NULL,
+    job_description TEXT,
+    is_default BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(test_id, job_role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_job_roles_test_id ON test_job_roles(test_id);
+
+INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+SELECT 
+    id as test_id,
+    job_role,
+    description as job_description,
+    true as is_default
+FROM tests
+WHERE job_role IS NOT NULL AND job_role != ''
+ON CONFLICT (test_id, job_role) DO NOTHING;
+
+
+
+
+
+
+
+CREATE TABLE IF NOT EXISTS test_job_roles (
+    id SERIAL PRIMARY KEY,
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    job_role VARCHAR(255) NOT NULL,
+    job_description TEXT,
+    is_default BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(test_id, job_role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_job_roles_test_id ON test_job_roles(test_id);
+
+
+
+
+select * from admins;
+
+
+-- Create HR Admin
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('hr@shnoor.com', '25d55ad283aa400af464c76d713c07ad', 'HR Admin')
+ON CONFLICT (email) DO NOTHING;
+
+-- Create Vivek Admin  
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('vivek@shnoor.com', '$2a$10$YourHashWillBeGeneratedHere', 'Vivek Admin')
+ON CONFLICT (email) DO NOTHING;
+
+-- Delete the incorrectly created admin accounts
+DELETE FROM admins WHERE email = 'hr@shnoor.com';
+DELETE FROM admins WHERE email = 'vivek@shnoor.com';
+
+-- Create HR Admin with properly hashed password (12345678)
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('hr@shnoor.com', '$2b$10$H9JIARf6dAWkzbnoH7XGHucViqQ5xmH/bdbEt.oPXXnjhBBJVqu3K', 'HR Admin')
+ON CONFLICT (email) DO NOTHING;
+
+-- Create Vivek Admin with properly hashed password (12345678)
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('vivek@shnoor.com', '$2b$10$DcDbWoW5OZNxiH96WgWp1.rP0V0OKTJZ9Y/seuCGD3ANJif1AN3jW', 'Vivek Admin')
+ON CONFLICT (email) DO NOTHING;
+
+-- Verify creation
+SELECT id, email, full_name, created_at FROM admins WHERE email IN ('hr@shnoor.com', 'vivek@shnoor.com');
+
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('pavani@shnoor.com', '$2b$10$H9JIARf6dAWkzbnoH7XGHucViqQ5xmH/bdbEt.oPXXnjhBBJVqu3K', 'HR Admin')
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('urvashi@shnoor.com', '$2b$10$H9JIARf6dAWkzbnoH7XGHucViqQ5xmH/bdbEt.oPXXnjhBBJVqu3K', 'HR Admin')
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO admins (email, password_hash, full_name) 
+VALUES ('naziya@shnoor.com', '$2b$10$H9JIARf6dAWkzbnoH7XGHucViqQ5xmH/bdbEt.oPXXnjhBBJVqu3K', 'HR Admin')
+ON CONFLICT (email) DO NOTHING;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Create test_assignments table
+-- This table manages which tests are assigned to which students
+
+CREATE TABLE IF NOT EXISTS test_assignments (
+    id SERIAL PRIMARY KEY,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(test_id, student_id)
+);
+
+-- Create indices for better query performance
+CREATE INDEX IF NOT EXISTS idx_test_assignments_student ON test_assignments(student_id);
+CREATE INDEX IF NOT EXISTS idx_test_assignments_test ON test_assignments(test_id);
+CREATE INDEX IF NOT EXISTS idx_test_assignments_active ON test_assignments(is_active);
+
+-- Add comment
+COMMENT ON TABLE test_assignments IS 'Manages assignment of tests to students';
+COMMENT ON COLUMN test_assignments.is_active IS 'Whether this assignment is currently active';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Create institutes table for pre-creating institutes by admin
+-- This allows admins to add institutes before students register
+
+CREATE TABLE IF NOT EXISTS institutes (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    display_name VARCHAR(255) NOT NULL,
+    created_by VARCHAR(255) DEFAULT 'admin',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Create index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_institutes_name ON institutes(LOWER(name));
+
+-- Add a comment to the table
+COMMENT ON TABLE institutes IS 'Stores institute/university names created by admin';
+COMMENT ON COLUMN institutes.name IS 'Normalized lowercase institute name for matching';
+COMMENT ON COLUMN institutes.display_name IS 'Original display name as entered by admin';
+
+-- Insert any existing institutes from students table (if any)
+INSERT INTO institutes (name, display_name, created_by, created_at)
+SELECT DISTINCT 
+    LOWER(institute) as name,
+    MAX(institute) as display_name,
+    'migration' as created_by,
+    MIN(created_at) as created_at
+FROM students
+WHERE institute IS NOT NULL AND TRIM(institute) != ''
+GROUP BY LOWER(institute)
+ON CONFLICT (name) DO NOTHING;
+
+
+
+
+SELECT id, title, start_datetime, end_datetime, 
+       start_datetime AT TIME ZONE 'UTC' as start_utc,
+       NOW() AT TIME ZONE 'UTC' as now_utc
+FROM tests 
+WHERE start_datetime IS NOT NULL;
+
+
+ALTER TABLE tests
+ALTER COLUMN start_datetime TYPE TIMESTAMPTZ
+USING start_datetime AT TIME ZONE 'Asia/Kolkata';
+
+ALTER TABLE tests
+ALTER COLUMN end_datetime TYPE TIMESTAMPTZ
+USING end_datetime AT TIME ZONE 'Asia/Kolkata';
+
+
+-- Add resume_link column (nullable to support existing students)
+ALTER TABLE students 
+ADD COLUMN IF NOT EXISTS resume_link VARCHAR(500);
+
+-- Add comment for documentation
+COMMENT ON COLUMN students.resume_link IS 'Public URL to student resume (Google Drive, Dropbox, etc.)';
+
+-- Create index for faster queries (optional, useful if filtering by resume presence)
+CREATE INDEX IF NOT EXISTS idx_students_resume_link ON students(resume_link) WHERE resume_link IS NOT NULL;
+
+-- Verify the column was added
+SELECT column_name, data_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_name = 'students' AND column_name = 'resume_link';
+
+
+
+
+
+
+
+
+
+
+
+
+CREATE TABLE IF NOT EXISTS proctoring_violations (
+    id SERIAL PRIMARY KEY,
+    student_id VARCHAR(255) NOT NULL,
+    test_id INTEGER NOT NULL,
+    violation_type VARCHAR(50) NOT NULL,
+    severity VARCHAR(20) NOT NULL,
+    message TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for faster queries
+CREATE INDEX IF NOT EXISTS idx_student_violations ON proctoring_violations(student_id);
+CREATE INDEX IF NOT EXISTS idx_test_violations ON proctoring_violations(test_id);
+CREATE INDEX IF NOT EXISTS idx_violation_timestamp ON proctoring_violations(timestamp);
+CREATE INDEX IF NOT EXISTS idx_severity ON proctoring_violations(severity);
+
+
+
+
+ALTER TABLE exam_progress 
+ADD COLUMN IF NOT EXISTS current_question INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS marked_for_review INTEGER[] DEFAULT '{}',
+ADD COLUMN IF NOT EXISTS visited_questions INTEGER[] DEFAULT '{0}',
+ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+
+CREATE OR REPLACE FUNCTION update_exam_progress_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_exam_progress_timestamp_trigger ON exam_progress;
+CREATE TRIGGER update_exam_progress_timestamp_trigger
+BEFORE UPDATE ON exam_progress
+FOR EACH ROW
+EXECUTE FUNCTION update_exam_progress_timestamp();
+
+
+
+
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS passing_percentage INTEGER DEFAULT 50;
+
+-- Add comment
+COMMENT ON COLUMN tests.passing_percentage IS 'Minimum percentage required to pass the test (default: 50)';
+
+-- Add is_mock_test column (if not exists)
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS is_mock_test BOOLEAN DEFAULT false;
+
+
+CREATE TABLE IF NOT EXISTS institute_test_assignments (
+    id SERIAL PRIMARY KEY,
+    institute_id INTEGER REFERENCES institutes(id) ON DELETE CASCADE,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(institute_id, test_id)
+);
+CREATE INDEX IF NOT EXISTS idx_institute_test_assignments_institute ON institute_test_assignments(institute_id);
+CREATE INDEX IF NOT EXISTS idx_institute_test_assignments_test ON institute_test_assignments(test_id);
+CREATE INDEX IF NOT EXISTS idx_institute_test_assignments_active ON institute_test_assignments(is_active);
+
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id SERIAL PRIMARY KEY,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+    comments TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_student_id ON feedback(student_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_test_id ON feedback(test_id);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Migration: Ensure all required columns and tables exist
+-- Run this in pgAdmin Query Tool
+
+BEGIN;
+
+-- Add columns to students table
+ALTER TABLE students ADD COLUMN IF NOT EXISTS institute VARCHAR(255);
+ALTER TABLE students ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+ALTER TABLE students ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS course VARCHAR(100);
+ALTER TABLE students ADD COLUMN IF NOT EXISTS specialization VARCHAR(100);
+ALTER TABLE students ADD COLUMN IF NOT EXISTS resume_link VARCHAR(500);
+
+-- Create institutes table
+CREATE TABLE IF NOT EXISTS institutes (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    display_name VARCHAR(255) NOT NULL,
+    created_by VARCHAR(255) DEFAULT 'admin',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Create test_assignments table
+CREATE TABLE IF NOT EXISTS test_assignments (
+    id SERIAL PRIMARY KEY,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(test_id, student_id)
+);
+
+-- Create institute_test_assignments table
+CREATE TABLE IF NOT EXISTS institute_test_assignments (
+    id SERIAL PRIMARY KEY,
+    institute_id INTEGER REFERENCES institutes(id) ON DELETE CASCADE,
+    test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(institute_id, test_id)
+);
+
+COMMIT;
+
+-- Verify the changes
+SELECT 'Migration completed successfully!' AS status;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BEGIN;
+
+-- 1. Add registration_deadline column (TIMESTAMPTZ for timezone support)
+ALTER TABLE institutes 
+ADD COLUMN IF NOT EXISTS registration_deadline TIMESTAMPTZ;
+
+-- 2. Add registration_status column with default 'open'
+ALTER TABLE institutes 
+ADD COLUMN IF NOT EXISTS registration_status VARCHAR(20) DEFAULT 'open';
+
+-- 3. Add registration_start_time column
+ALTER TABLE institutes 
+ADD COLUMN IF NOT EXISTS registration_start_time TIMESTAMPTZ;
+
+-- 4. Add check constraint for valid status values
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'institutes_registration_status_check'
+    ) THEN
+        ALTER TABLE institutes 
+        ADD CONSTRAINT institutes_registration_status_check 
+        CHECK (registration_status IN ('open', 'closed', 'paused'));
+    END IF;
+END $$;
+
+-- 5. Add comments for documentation
+COMMENT ON COLUMN institutes.registration_deadline IS 'Deadline for student registration (IST timezone stored as UTC)';
+COMMENT ON COLUMN institutes.registration_status IS 'Registration status: open, closed, paused';
+COMMENT ON COLUMN institutes.registration_start_time IS 'Start time for student registration window (IST timezone stored as UTC)';
+
+-- 6. Create index for faster queries
+CREATE INDEX IF NOT EXISTS idx_institutes_registration_status 
+ON institutes(registration_status);
+
+COMMIT;
+
+-- ============================================
+-- VERIFICATION QUERY
+-- ============================================
+SELECT 
+    column_name, 
+    data_type, 
+    column_default,
+    is_nullable
+FROM information_schema.columns 
+WHERE table_name = 'institutes' 
+AND column_name IN ('registration_deadline', 'registration_status', 'registration_start_time')
+ORDER BY column_name;
+
+-- ============================================
+-- VIEW CURRENT INSTITUTES WITH NEW COLUMNS
+-- ============================================
+SELECT 
+    id,
+    display_name,
+    registration_status,
+    registration_start_time AT TIME ZONE 'Asia/Kolkata' as start_time_ist,
+    registration_deadline AT TIME ZONE 'Asia/Kolkata' as deadline_ist,
+    CASE 
+        WHEN registration_status = 'closed' THEN 'Closed'
+        WHEN registration_status = 'paused' THEN 'Paused'
+        WHEN registration_start_time IS NOT NULL AND registration_start_time > NOW() THEN 'Not Yet Open'
+        WHEN registration_deadline IS NOT NULL AND registration_deadline < NOW() THEN 'Deadline Passed'
+        ELSE 'Open'
+    END as effective_status
+FROM institutes
+WHERE is_active = true
+ORDER BY display_name;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Add audit columns to tests table
+ALTER TABLE tests 
+ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'admin',
+ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255),
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+
+-- Update existing records to have created_by
+UPDATE tests 
+SET created_by = 'admin' 
+WHERE created_by IS NULL;
+
+-- Create index for better query performance
+CREATE INDEX IF NOT EXISTS idx_tests_created_by ON tests(created_by);
+CREATE INDEX IF NOT EXISTS idx_tests_updated_by ON tests(updated_by);
+
+
+
+
+
+
+
+-- Create the proctoring_violations table
+CREATE TABLE IF NOT EXISTS proctoring_violations (
+  id SERIAL PRIMARY KEY,
+  student_id VARCHAR(50) NOT NULL,
+  test_id INTEGER NOT NULL,
+  violation_type VARCHAR(50) NOT NULL,
+  severity VARCHAR(20) NOT NULL,
+  message TEXT,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for performance optimization
+CREATE INDEX IF NOT EXISTS idx_proctoring_violations_student 
+  ON proctoring_violations(student_id);
+
+CREATE INDEX IF NOT EXISTS idx_proctoring_violations_test 
+  ON proctoring_violations(test_id);
+
+CREATE INDEX IF NOT EXISTS idx_proctoring_violations_type 
+  ON proctoring_violations(violation_type);
+
+CREATE INDEX IF NOT EXISTS idx_proctoring_violations_composite 
+  ON proctoring_violations(student_id, test_id, violation_type);
+
+-- Verify table creation
+SELECT 'Table created successfully!' as status
+WHERE EXISTS (
+  SELECT FROM information_schema.tables 
+  WHERE table_name = 'proctoring_violations'
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    id SERIAL PRIMARY KEY,
+    retry_timer_minutes INTEGER DEFAULT 5,
+    maintenance_mode BOOLEAN DEFAULT false,
+    maintenance_message TEXT DEFAULT 'The system is currently undergoing scheduled maintenance. Please check back later.',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert default settings if empty
+INSERT INTO system_settings (id, retry_timer_minutes, maintenance_mode)
+VALUES (1, 5, false)
+ON CONFLICT (id) DO NOTHING;
+
+
+
+
+
+
+
+
+
+
+
+-- Add marks column to coding_questions table
+ALTER TABLE coding_questions ADD COLUMN IF NOT EXISTS marks INTEGER DEFAULT 10;
+
+-- Add marks_earned column to student_coding_submissions table
+ALTER TABLE student_coding_submissions ADD COLUMN IF NOT EXISTS marks_earned DECIMAL(5,2) DEFAULT 0;
+
+-- Update existing coding questions to have default marks if NULL
+UPDATE coding_questions SET marks = 10 WHERE marks IS NULL;
+
+-- Update existing submissions to have 0 marks if NULL
+UPDATE student_coding_submissions SET marks_earned = 0 WHERE marks_earned IS NULL;
+
+
+
+
+
+
+
+
+
+-- Create proctoring_messages table for real-time admin-student communication
+-- This table stores messages sent from admins/proctors to students during live sessions
+
+CREATE TABLE IF NOT EXISTS proctoring_messages (
+    id SERIAL PRIMARY KEY,
+    admin_id VARCHAR(255) NOT NULL,
+    student_id VARCHAR(255) NOT NULL,
+    test_id VARCHAR(255),
+    message TEXT NOT NULL,
+    message_type VARCHAR(50) DEFAULT 'warning'
+        CHECK (message_type IN ('warning', 'instruction', 'alert', 'info')),
+    priority VARCHAR(20) DEFAULT 'medium'
+        CHECK (priority IN ('low', 'medium', 'high')),
+    session_id VARCHAR(255),
+    message_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    read_status BOOLEAN DEFAULT FALSE,
+    read_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for efficient queries
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_student_id ON proctoring_messages(student_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_admin_id ON proctoring_messages(admin_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_test_id ON proctoring_messages(test_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_session_id ON proctoring_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_message_timestamp ON proctoring_messages(message_timestamp);
+CREATE INDEX IF NOT EXISTS idx_proctoring_messages_read_status ON proctoring_messages(read_status);
+
+-- Add comments for documentation
+COMMENT ON TABLE proctoring_messages IS 'Stores real-time messages sent from admins/proctors to students during live exam sessions';
+COMMENT ON COLUMN proctoring_messages.admin_id IS 'ID of the admin/proctor who sent the message';
+COMMENT ON COLUMN proctoring_messages.student_id IS 'ID of the student receiving the message';
+COMMENT ON COLUMN proctoring_messages.test_id IS 'ID of the test/exam being taken';
+COMMENT ON COLUMN proctoring_messages.message_type IS 'Type of message: warning, instruction, alert, info';
+COMMENT ON COLUMN proctoring_messages.priority IS 'Priority level: low, medium, high - affects UI display';
+COMMENT ON COLUMN proctoring_messages.session_id IS 'Session identifier for the specific exam attempt';
+COMMENT ON COLUMN proctoring_messages.read_status IS 'Whether the student has acknowledged reading the message';
+COMMENT ON COLUMN proctoring_messages.read_at IS 'Timestamp when the student acknowledged the message';
+
+-- Create a function to update the updated_at column automatically
+CREATE OR REPLACE FUNCTION update_proctoring_messages_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for auto-updating updated_at column
+DROP TRIGGER IF EXISTS update_proctoring_messages_timestamp_trigger ON proctoring_messages;
+CREATE TRIGGER update_proctoring_messages_timestamp_trigger
+BEFORE UPDATE ON proctoring_messages
+FOR EACH ROW
+EXECUTE FUNCTION update_proctoring_messages_timestamp();
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Add updated_at, phone, and address columns to admins table
+ALTER TABLE admins 
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN IF NOT EXISTS phone VARCHAR(20),
+ADD COLUMN IF NOT EXISTS address TEXT;
+
+-- Update existing records to have updated_at = created_at
+UPDATE admins 
+SET updated_at = created_at 
+WHERE updated_at IS NULL;
+
+-- Add comments for documentation
+COMMENT ON COLUMN admins.updated_at IS 'Timestamp when admin profile was last updated';
+COMMENT ON COLUMN admins.phone IS 'Admin phone number';
+COMMENT ON COLUMN admins.address IS 'Admin address';
+
+
+
+
+
+
+-- Create OTPs table for email verification
+CREATE TABLE IF NOT EXISTS otps (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    otp_hash VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    is_used BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for faster queries
+CREATE INDEX IF NOT EXISTS idx_otps_email ON otps(email);
+CREATE INDEX IF NOT EXISTS idx_otps_expires_at ON otps(expires_at);
+CREATE INDEX IF NOT EXISTS idx_otps_created_at ON otps(created_at);
+
+-- Add comments
+COMMENT ON TABLE otps IS 'Stores OTPs for email verification during registration';
+COMMENT ON COLUMN otps.email IS 'User email address (normalized to lowercase)';
+COMMENT ON COLUMN otps.otp_hash IS 'Hashed OTP for security';
+COMMENT ON COLUMN otps.expires_at IS 'OTP expiration timestamp (5 minutes from creation)';
+COMMENT ON COLUMN otps.attempts IS 'Number of verification attempts (max 3)';
+COMMENT ON COLUMN otps.is_used IS 'Whether the OTP has been used successfully';
+
+
+
+
+
+
+
+
+
+
+
+ALTER TABLE exam_progress 
+ADD COLUMN IF NOT EXISTS session_token VARCHAR(255) UNIQUE,
+ADD COLUMN IF NOT EXISTS session_created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN IF NOT EXISTS exam_started BOOLEAN DEFAULT FALSE;
+
+-- Create index for fast session token lookup
+CREATE INDEX IF NOT EXISTS idx_exam_progress_session_token ON exam_progress(session_token);
+
+-- Add comment
+COMMENT ON COLUMN exam_progress.session_token IS 'Unique session token for exam submission without Firebase auth';
+COMMENT ON COLUMN exam_progress.exam_started IS 'Flag to indicate if student has started the exam';
+
+
+
+
+
+
+-- Create interviews table for PostgreSQL
+CREATE TABLE IF NOT EXISTS interviews (
+  id SERIAL PRIMARY KEY,
+  student_id INTEGER NOT NULL,
+  test_id INTEGER NOT NULL,
+  scheduled_time TIMESTAMP NOT NULL,
+  duration INTEGER DEFAULT 60,
+  status VARCHAR(20) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'in_progress', 'completed', 'cancelled')),
+  peer_id VARCHAR(255),
+  admin_notes TEXT,
+  technical_score INTEGER,
+  communication_score INTEGER,
+  recommendation VARCHAR(20) DEFAULT 'on_hold' CHECK (recommendation IN ('selected', 'rejected', 'on_hold')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+  FOREIGN KEY (test_id) REFERENCES tests(id) ON DELETE CASCADE
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_interviews_scheduled_time ON interviews(scheduled_time);
+CREATE INDEX IF NOT EXISTS idx_interviews_status ON interviews(status);
+
+-- Create trigger to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_interviews_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = CURRENT_TIMESTAMP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_interviews_updated_at
+BEFORE UPDATE ON interviews
+FOR EACH ROW
+EXECUTE FUNCTION update_interviews_updated_at();
+
+
+
+ALTER TABLE interviews
+ALTER COLUMN scheduled_time TYPE TIMESTAMPTZ
+USING scheduled_time AT TIME ZONE 'Asia/Kolkata';
+
+
+
+
+
+CREATE TABLE IF NOT EXISTS student_messages (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) DEFAULT 'Anonymous',
+    email VARCHAR(255),
+    message TEXT NOT NULL,
+    topic VARCHAR(100) DEFAULT 'General',
+    image_path VARCHAR(500),
+    status VARCHAR(20) DEFAULT 'unread', -- unread, read, archived
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    read_at TIMESTAMPTZ
+);
+
+-- Indexes for efficient querying
+CREATE INDEX IF NOT EXISTS idx_student_messages_status ON student_messages(status);
+CREATE INDEX IF NOT EXISTS idx_student_messages_created_at ON student_messages(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_student_messages_topic ON student_messages(topic);
+
+-- Comment on table
+COMMENT ON TABLE student_messages IS 'Stores support messages from students via the chatbot contact feature';
+COMMENT ON COLUMN student_messages.status IS 'Message status: unread, read, archived';
+COMMENT ON COLUMN student_messages.image_path IS 'Relative path to uploaded screenshot image';
+
+
+
+
+-- First, add columns to existing student_messages table if needed
+ALTER TABLE student_messages 
+ADD COLUMN IF NOT EXISTS student_id VARCHAR(100),
+ADD COLUMN IF NOT EXISTS college VARCHAR(255),
+ADD COLUMN IF NOT EXISTS conversation_id INTEGER,
+ADD COLUMN IF NOT EXISTS sender_type VARCHAR(20) DEFAULT 'student',
+ADD COLUMN IF NOT EXISTS parent_message_id INTEGER REFERENCES student_messages(id);
+
+-- Create index for faster student queries
+CREATE INDEX IF NOT EXISTS idx_student_messages_student_id ON student_messages(student_id);
+CREATE INDEX IF NOT EXISTS idx_student_messages_college ON student_messages(college);
+CREATE INDEX IF NOT EXISTS idx_student_messages_conversation ON student_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_student_messages_sender ON student_messages(sender_type);
+
+-- Comment on new columns
+COMMENT ON COLUMN student_messages.student_id IS 'Student ID for authenticated student messages';
+COMMENT ON COLUMN student_messages.college IS 'College/Institute name of the student';
+COMMENT ON COLUMN student_messages.conversation_id IS 'Groups related messages in a conversation thread';
+COMMENT ON COLUMN student_messages.sender_type IS 'Sender type: student or admin';
+COMMENT ON COLUMN student_messages.parent_message_id IS 'Reference to parent message for threaded replies';
+
+
+
+
+
+
+
+
+-- Setup interview chat functionality
+-- Run this with: psql -U postgres -d mcq_exam_portal -f setup_interview_chat.sql
+
+-- Create interview chat messages table
+CREATE TABLE IF NOT EXISTS interview_chat_messages (
+    id SERIAL PRIMARY KEY,
+    interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+    sender_type VARCHAR(10) NOT NULL CHECK (sender_type IN ('admin', 'student')),
+    sender_name VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_interview_chat_interview_id ON interview_chat_messages(interview_id);
+CREATE INDEX IF NOT EXISTS idx_interview_chat_created_at ON interview_chat_messages(created_at);
+
+-- -- Verify table creation
+SELECT 'Interview chat table setup complete!' as status;
+
+
+
+-- Create forced_terminations table for tracking admin-initiated test stops
+-- This table logs all instances where an admin manually stops a student's test due to cheating
+
+CREATE TABLE IF NOT EXISTS forced_terminations (
+    id SERIAL PRIMARY KEY,
+    student_id VARCHAR(255) NOT NULL,
+    test_id INTEGER NOT NULL,
+    admin_id VARCHAR(255) NOT NULL,
+    admin_name VARCHAR(255),
+    reason TEXT NOT NULL,
+    violation_summary TEXT,
+    termination_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    student_notified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for efficient queries
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_student_id ON forced_terminations(student_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_test_id ON forced_terminations(test_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_admin_id ON forced_terminations(admin_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_timestamp ON forced_terminations(termination_timestamp);
+
+-- Add comments for documentation
+COMMENT ON TABLE forced_terminations IS 'Logs all admin-initiated test terminations due to suspected cheating';
+COMMENT ON COLUMN forced_terminations.student_id IS 'ID of the student whose test was stopped';
+COMMENT ON COLUMN forced_terminations.test_id IS 'ID of the test that was terminated';
+COMMENT ON COLUMN forced_terminations.admin_id IS 'ID of the admin who stopped the test';
+COMMENT ON COLUMN forced_terminations.reason IS 'Admin-provided reason for stopping the test';
+COMMENT ON COLUMN forced_terminations.violation_summary IS 'Summary of violations at time of termination';
+COMMENT ON COLUMN forced_terminations.student_notified IS 'Whether the student received the termination notification';
+
+-- Add columns to results table to track forced terminations
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='results' AND column_name='termination_reason') THEN
+        ALTER TABLE results ADD COLUMN termination_reason VARCHAR(50);
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='results' AND column_name='terminated_by') THEN
+        ALTER TABLE results ADD COLUMN terminated_by VARCHAR(255);
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='results' AND column_name='is_forced_termination') THEN
+        ALTER TABLE results ADD COLUMN is_forced_termination BOOLEAN DEFAULT FALSE;
+    END IF;
+END $$;
+
+-- Create index on termination reason
+CREATE INDEX IF NOT EXISTS idx_results_termination_reason ON results(termination_reason) WHERE termination_reason IS NOT NULL;
+
+
+
+
+
+
+
+
+-- Migration: Add forced_terminations table for admin force-stop functionality
+-- Created: 2024-03-11
+
+CREATE TABLE IF NOT EXISTS forced_terminations (
+    id SERIAL PRIMARY KEY,
+    student_id VARCHAR(255) NOT NULL,
+    test_id INTEGER NOT NULL,
+    admin_id VARCHAR(255) NOT NULL,
+    admin_name VARCHAR(255) NOT NULL,
+    reason TEXT NOT NULL,
+    violation_summary TEXT,
+    student_notified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Add indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_student_id ON forced_terminations(student_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_test_id ON forced_terminations(test_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_admin_id ON forced_terminations(admin_id);
+CREATE INDEX IF NOT EXISTS idx_forced_terminations_created_at ON forced_terminations(created_at);
+
+-- Add foreign key constraints if the referenced tables exist
+-- Note: Uncomment these if you want strict referential integrity
+-- ALTER TABLE forced_terminations 
+-- ADD CONSTRAINT fk_forced_terminations_test_id 
+-- FOREIGN KEY (test_id) REFERENCES tests(id) ON DELETE CASCADE;
+
+COMMENT ON TABLE forced_terminations IS 'Records of tests that were forcibly terminated by administrators';
+COMMENT ON COLUMN forced_terminations.student_id IS 'ID of the student whose test was terminated';
+COMMENT ON COLUMN forced_terminations.test_id IS 'ID of the test that was terminated';
+COMMENT ON COLUMN forced_terminations.admin_id IS 'ID of the admin who terminated the test';
+COMMENT ON COLUMN forced_terminations.admin_name IS 'Name of the admin who terminated the test';
+COMMENT ON COLUMN forced_terminations.reason IS 'Reason provided by admin for termination';
+COMMENT ON COLUMN forced_terminations.violation_summary IS 'Summary of violations that led to termination';
+COMMENT ON COLUMN forced_terminations.student_notified IS 'Whether the student was successfully notified of termination';
+
+
+
+
+
+
+
+
+
+-- ============================================
+-- JOB OPENINGS MODULE MIGRATION
+-- ============================================
+
+-- Main job postings table
+CREATE TABLE IF NOT EXISTS job_openings (
+    id SERIAL PRIMARY KEY,
+    company_name VARCHAR(255) NOT NULL,
+    job_role VARCHAR(255) NOT NULL,
+    job_description TEXT NOT NULL,
+    registration_deadline TIMESTAMPTZ NOT NULL,
+    eligibility_criteria TEXT NOT NULL,
+    application_link VARCHAR(500) NOT NULL,
+    admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+    status VARCHAR(20) DEFAULT 'draft',           -- draft | active | expired
+    is_published BOOLEAN DEFAULT false,
+    published_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Track which students were notified per job
+CREATE TABLE IF NOT EXISTS job_notifications (
+    id SERIAL PRIMARY KEY,
+    job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    email_status VARCHAR(20) DEFAULT 'sent',      -- sent | failed
+    email_sent_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(job_opening_id, student_id)
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_job_openings_status      ON job_openings(status);
+CREATE INDEX IF NOT EXISTS idx_job_openings_published   ON job_openings(is_published);
+CREATE INDEX IF NOT EXISTS idx_job_openings_deadline    ON job_openings(registration_deadline);
+CREATE INDEX IF NOT EXISTS idx_job_notifications_job    ON job_notifications(job_opening_id);
+CREATE INDEX IF NOT EXISTS idx_job_notifications_student ON job_notifications(student_id);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================
+-- JOB APPLICATIONS MODULE MIGRATION
+-- Integrates job postings with assessment workflow
+-- ============================================
+
+-- Main job applications table
+CREATE TABLE IF NOT EXISTS job_applications (
+    id SERIAL PRIMARY KEY,
+    job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    
+    -- Application data
+    resume_url TEXT,  -- Can reuse student.resume_link or upload new
+    cover_letter TEXT,
+    status VARCHAR(50) DEFAULT 'submitted',  
+    -- Status flow: submitted → screening → assessment_assigned → assessment_completed → shortlisted → rejected
+    
+    -- Eligibility check
+    is_eligible BOOLEAN DEFAULT true,
+    eligibility_notes TEXT,
+    
+    -- Assessment tracking
+    test_assigned_at TIMESTAMPTZ,
+    test_completed_at TIMESTAMPTZ,
+    assessment_score DECIMAL(5,2),
+    passed_assessment BOOLEAN,
+    
+    -- Metadata
+    applied_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by INTEGER REFERENCES admins(id),
+    reviewed_at TIMESTAMPTZ,
+    
+    UNIQUE(job_opening_id, student_id)  -- One application per student per job
+);
+
+-- Link job openings to tests (many-to-many)
+CREATE TABLE IF NOT EXISTS job_opening_tests (
+    id SERIAL PRIMARY KEY,
+    job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    is_mandatory BOOLEAN DEFAULT true,
+    weightage INTEGER DEFAULT 100,  -- For multiple tests
+    passing_criteria INTEGER DEFAULT 50,  -- Percentage
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(job_opening_id, test_id)
+);
+
+-- Structured eligibility criteria (optional - for automated validation)
+CREATE TABLE IF NOT EXISTS job_eligibility_rules (
+    id SERIAL PRIMARY KEY,
+    job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+    rule_type VARCHAR(50) NOT NULL,  -- cgpa, branch, degree, year, backlog, institute
+    operator VARCHAR(20) NOT NULL,   -- gte, lte, eq, in, not_in
+    value TEXT NOT NULL,             -- JSON or simple value
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Add new columns to job_openings table
+ALTER TABLE job_openings 
+    ALTER COLUMN application_link DROP NOT NULL;
+
+ALTER TABLE job_openings 
+    ADD COLUMN IF NOT EXISTS application_mode VARCHAR(20) DEFAULT 'external';
+    -- Values: 'external' (redirects to company site) | 'internal' (apply on platform)
+
+ALTER TABLE job_openings 
+    ADD COLUMN IF NOT EXISTS min_cgpa DECIMAL(3,2),
+    ADD COLUMN IF NOT EXISTS allowed_branches TEXT,  -- JSON array or comma-separated
+    ADD COLUMN IF NOT EXISTS max_active_backlogs INTEGER;
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_job_applications_student ON job_applications(student_id);
+CREATE INDEX IF NOT EXISTS idx_job_applications_job ON job_applications(job_opening_id);
+CREATE INDEX IF NOT EXISTS idx_job_applications_status ON job_applications(status);
+CREATE INDEX IF NOT EXISTS idx_job_applications_applied_at ON job_applications(applied_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_opening_tests_job ON job_opening_tests(job_opening_id);
+CREATE INDEX IF NOT EXISTS idx_job_opening_tests_test ON job_opening_tests(test_id);
+CREATE INDEX IF NOT EXISTS idx_job_eligibility_rules_job ON job_eligibility_rules(job_opening_id);
+
+-- Comments for documentation
+COMMENT ON TABLE job_applications IS 'Tracks student applications to job openings with assessment integration';
+COMMENT ON TABLE job_opening_tests IS 'Many-to-many relationship linking job openings to assessments';
+COMMENT ON TABLE job_eligibility_rules IS 'Structured eligibility criteria for automated validation';
+
+COMMENT ON COLUMN job_applications.status IS 'Application lifecycle: submitted → screening → assessment_assigned → assessment_completed → shortlisted → rejected';
+COMMENT ON COLUMN job_applications.resume_url IS 'Can be student profile resume or uploaded specifically for this application';
+COMMENT ON COLUMN job_applications.assessment_score IS 'Aggregated score from all linked test results';
+
+COMMENT ON COLUMN job_openings.application_mode IS 'external: redirect to company URL | internal: apply on platform';
+COMMENT ON COLUMN job_opening_tests.is_mandatory IS 'Whether this test must be completed for application to proceed';
+COMMENT ON COLUMN job_opening_tests.passing_criteria IS 'Minimum percentage required to pass this test';
+
+
+
+
+
+
+-- Add job_application_id to test_attempts table to track which application the test was taken for
+-- This allows the same test to be taken multiple times for different job applications
+
+ALTER TABLE test_attempts 
+ADD COLUMN IF NOT EXISTS job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL;
+
+-- Create index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_test_attempts_job_application ON test_attempts(job_application_id);
+
+-- Drop the UNIQUE constraint on (student_id, test_id) since students can now take the same test for different applications
+ALTER TABLE test_attempts DROP CONSTRAINT IF EXISTS test_attempts_student_id_test_id_key;
+
+-- Add new UNIQUE constraint that includes job_application_id
+ALTER TABLE test_attempts ADD CONSTRAINT test_attempts_student_test_application_unique 
+    UNIQUE (student_id, test_id, job_application_id);
+
+
+
+
+
+UPDATE job_applications
+SET status = 'assessment_assigned',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status IN ('submitted', 'screening', 'assessment_completed')
+  AND status NOT IN ('shortlisted', 'rejected');
+
+-- Verify result
+SELECT status, COUNT(*) AS count
+FROM job_applications
+GROUP BY status
+ORDER BY count DESC;
+
+
+
+
+-- Re-evaluate completed applications that are stuck at assessment_completed
+-- Sets shortlisted if passed_assessment = true, rejected if false
+UPDATE job_applications
+SET status = CASE 
+    WHEN passed_assessment = true THEN 'shortlisted'
+    WHEN passed_assessment = false THEN 'rejected'
+    ELSE status
+END,
+updated_at = CURRENT_TIMESTAMP
+WHERE status = 'assessment_completed'
+  AND passed_assessment IS NOT NULL;
+
+-- Convert submitted/screening (no test assigned yet or in progress) → assessment_assigned
+UPDATE job_applications
+SET status = 'assessment_assigned',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status IN ('submitted', 'screening');
+
+
+SELECT status, COUNT(*) AS count
+FROM job_applications
+GROUP BY status
+ORDER BY count DESC;
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================================
+-- STEP 1: Diagnose current status distribution
+-- ============================================================
+SELECT status, COUNT(*) AS count
+FROM job_applications
+GROUP BY status
+ORDER BY count DESC;
+
+-- ============================================================
+-- STEP 2: Fix wrongly-rejected students where passed_assessment = true
+-- and violations <= 5 (simplest case)
+-- ============================================================
+UPDATE job_applications ja
+SET status = 'shortlisted',
+    passed_assessment = true,
+    updated_at = CURRENT_TIMESTAMP
+WHERE ja.status = 'rejected'
+  AND ja.passed_assessment = true
+  AND (
+      SELECT COUNT(*)
+      FROM proctoring_violations pv
+      WHERE pv.student_id = ja.student_id::varchar
+        AND pv.test_id IN (
+            SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id
+        )
+  ) <= 5;
+
+-- ============================================================
+-- STEP 3: Fix applications stuck at assessment_completed
+-- ============================================================
+UPDATE job_applications ja
+SET status = CASE
+    WHEN ja.passed_assessment = true
+         AND (
+             SELECT COUNT(*)
+             FROM proctoring_violations pv
+             WHERE pv.student_id = ja.student_id::varchar
+               AND pv.test_id IN (
+                   SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id
+               )
+         ) <= 5
+    THEN 'shortlisted'
+    ELSE 'rejected'
+END,
+updated_at = CURRENT_TIMESTAMP
+WHERE ja.status = 'assessment_completed'
+  AND ja.passed_assessment IS NOT NULL;
+
+-- ============================================================
+-- STEP 4: Fix students stuck at assessment_assigned/submitted/screening
+-- who have completed all tests ASSIGNED TO THEM
+-- Uses per-student assigned test count, not total job tests
+-- ============================================================
+UPDATE job_applications ja
+SET status = CASE
+    WHEN COALESCE(
+        (
+            SELECT bool_and(ta.percentage >= t.passing_percentage)
+            FROM test_attempts ta
+            INNER JOIN tests t ON ta.test_id = t.id
+            WHERE ta.job_application_id = ja.id
+              AND ta.student_id = ja.student_id
+        ), false
+    ) = true
+    AND (
+        SELECT COUNT(*)
+        FROM proctoring_violations pv
+        WHERE pv.student_id = ja.student_id::varchar
+          AND pv.test_id IN (
+              SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id
+          )
+    ) <= 5
+    THEN 'shortlisted'
+    ELSE 'rejected'
+END,
+passed_assessment = COALESCE(
+    (
+        SELECT bool_and(ta.percentage >= t.passing_percentage)
+        FROM test_attempts ta
+        INNER JOIN tests t ON ta.test_id = t.id
+        WHERE ta.job_application_id = ja.id
+          AND ta.student_id = ja.student_id
+    ), false
+),
+assessment_score = (
+    SELECT AVG(ta.percentage)
+    FROM test_attempts ta
+    WHERE ta.job_application_id = ja.id
+      AND ta.student_id = ja.student_id
+),
+test_completed_at = CURRENT_TIMESTAMP,
+updated_at = CURRENT_TIMESTAMP
+WHERE ja.status IN ('assessment_assigned', 'submitted', 'screening')
+  AND (
+      -- Student completed all tests assigned to them for this job
+      SELECT COUNT(DISTINCT ta.test_id)
+      FROM test_attempts ta
+      WHERE ta.job_application_id = ja.id
+        AND ta.student_id = ja.student_id
+  ) >= (
+      -- Count only tests this student is actually assigned to
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
+  )
+  AND (
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
+  ) > 0;
+
+-- ============================================================
+-- STEP 5: Normalize remaining legacy statuses → assessment_assigned
+-- ============================================================
+UPDATE job_applications
+SET status = 'assessment_assigned',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status IN ('submitted', 'screening');
+
+-- ============================================================
+-- STEP 6: THE KEY FIX — recalculate ALL rejected students from scratch
+-- using live test_attempts + live violation counts + per-student assigned tests
+-- ============================================================
+UPDATE job_applications ja
+SET status = 'shortlisted',
+    passed_assessment = true,
+    assessment_score = (
+        SELECT AVG(ta.percentage)
+        FROM test_attempts ta
+        WHERE ta.job_application_id = ja.id
+          AND ta.student_id = ja.student_id
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE ja.status = 'rejected'
+  AND (
+      -- Completed all tests assigned to them
+      SELECT COUNT(DISTINCT ta.test_id)
+      FROM test_attempts ta
+      WHERE ta.job_application_id = ja.id
+        AND ta.student_id = ja.student_id
+  ) >= (
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
+  )
+  AND (
+      SELECT COUNT(DISTINCT jot.test_id)
+      FROM job_opening_tests jot
+      INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+          AND tasgn.student_id = ja.student_id
+          AND tasgn.is_active = true
+      WHERE jot.job_opening_id = ja.job_opening_id
+  ) > 0
+  -- Actually passed all tests
+  AND COALESCE(
+      (
+          SELECT bool_and(ta.percentage >= t.passing_percentage)
+          FROM test_attempts ta
+          INNER JOIN tests t ON ta.test_id = t.id
+          WHERE ta.job_application_id = ja.id
+            AND ta.student_id = ja.student_id
+      ), false
+  ) = true
+  -- Not flagged (violations scoped to THIS job's tests only)
+  AND (
+      SELECT COUNT(*)
+      FROM proctoring_violations pv
+      WHERE pv.student_id = ja.student_id::varchar
+        AND pv.test_id IN (
+            SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id
+        )
+  ) <= 5;
+
+-- ============================================================
+-- STEP 7: Verify final state
+-- ============================================================
+SELECT status, COUNT(*) AS count
+FROM job_applications
+GROUP BY status
+ORDER BY count DESC;
+
+-- ============================================================
+-- STEP 8: Full diagnostic — shows every student with actual pass/violation status
+-- Run this to see exactly who should be shortlisted vs rejected
+-- ============================================================
+SELECT
+    ja.id AS application_id,
+    s.full_name,
+    s.email,
+    ja.status AS current_status,
+    ja.passed_assessment,
+    COALESCE(
+        (SELECT bool_and(ta.percentage >= t.passing_percentage)
+         FROM test_attempts ta INNER JOIN tests t ON ta.test_id = t.id
+         WHERE ta.job_application_id = ja.id AND ta.student_id = ja.student_id),
+        false
+    ) AS actually_passed,
+    (SELECT COUNT(*) FROM proctoring_violations pv
+     WHERE pv.student_id = ja.student_id::varchar
+       AND pv.test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = ja.job_opening_id)
+    ) AS job_violation_count,
+    (SELECT COUNT(DISTINCT ta.test_id) FROM test_attempts ta WHERE ta.job_application_id = ja.id) AS tests_completed,
+    (SELECT COUNT(DISTINCT jot.test_id)
+     FROM job_opening_tests jot
+     INNER JOIN test_assignments tasgn ON tasgn.test_id = jot.test_id
+         AND tasgn.student_id = ja.student_id AND tasgn.is_active = true
+     WHERE jot.job_opening_id = ja.job_opening_id
+    ) AS tests_assigned_to_student
+FROM job_applications ja
+INNER JOIN students s ON s.id = ja.student_id
+ORDER BY ja.status, s.full_name;
+
+
+
+
+
+
+
+
+
+
+
+

@@ -127,30 +127,3 @@ certs/
 # ============================================
 test-integration.js
 verify-setup.js
-
-# ============================================
-# Code Execution & Coding Problems (temporary exclusion)
-# ============================================
-# Services
-services/codeExecution.service.js
-services/executionOrchestrator.service.js
-
-# Controllers
-controllers/codeExecution.controller.js
-controllers/codingQuestions.controller.js
-
-# Routes
-routes/codeExecution.routes.js
-routes/codingQuestions.js
-routes/codingQuestions.routes.js
-
-# Test files
-test-code-execution.js
-test-coding-api.js
-
-# Migration files
-fix-coding-tables.js
-run-coding-migration.js
-migrations/create-coding-questions-table.sql
-migrations/create-coding-tables.sql
-migrations/run-coding-questions-migration.js

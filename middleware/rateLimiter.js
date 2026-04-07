@@ -1,9 +1,10 @@
 const rateLimit = require('express-rate-limit');
 
 // API rate limiter - Per IP address
+// Optimized for 230 students: 230 students × 150 requests/hour = 34,500
 const apiLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: process.env.NODE_ENV === 'production' ? 20000 : 20000, // 50 students × 100 requests
+  max: process.env.NODE_ENV === 'production' ? 40000 : 10000, // Increased for 230+ students
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later.',
@@ -14,9 +15,10 @@ const apiLimiter = rateLimit({
 });
 
 // Authentication rate limiter - Per IP address
+// Optimized for 230 students logging in within 15 minutes
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes (reduced window)
-  max: 800, // Increased limit
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Increased for 230+ students from same network
   message: {
     success: false,
     message: 'Too many authentication attempts, please try again after some time.',
@@ -27,10 +29,10 @@ const authLimiter = rateLimit({
 });
 
 // Test submission rate limiter - Per IP address
-// Supports up to 50 students from same network
+// Optimized for 230 students submitting within 1 hour window
 const submissionLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 15000,
+  max: 25000, // 230 students × 100 submissions (answers + progress saves)
   message: {
     success: false,
     message: 'Too many requests, please try again later.',
@@ -40,10 +42,10 @@ const submissionLimiter = rateLimit({
 });
 
 // Proctoring frame rate limiter - Per IP per second
-// Supports up to 50 students at 5 fps from same network
+// Optimized for 230 students at 2 fps = 460 req/s
 const proctoringLimiter = rateLimit({
   windowMs: 1000, // 1 second
-  max: 700,
+  max: 1000, // Increased from 500 to handle 230 students at 2fps + buffer
   message: {
     success: false,
     message: 'Frame rate exceeded, please reduce proctoring frame rate.',
