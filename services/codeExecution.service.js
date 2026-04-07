@@ -147,9 +147,11 @@ class CodeExecutionService {
       // Clean up Docker and system noise first
       error = error
         .replace(/\/app\/Main\.java/g, 'Main.java')
+        .replace(/\/app\/[a-zA-Z0-9_]+\.java/g, 'Solution.java')
         .replace(/javac: file not found:.*$/gm, '')
         .replace(/^.*openjdk.*$/gm, '')
         .replace(/^.*jdk-slim.*$/gm, '')
+        .replace(/^.*eclipse-temurin.*$/gm, '')
         .trim();
 
       // Handle Java compilation errors
@@ -447,7 +449,9 @@ class CodeExecutionService {
 
   async runJava(code) {
     const startTime = Date.now();
-    const filename = `Main_${Date.now()}.java`;
+    const classMatch = code.match(/(?:public\s+)?class\s+([a-zA-Z0-9_]+)/);
+    const className = classMatch ? classMatch[1] : 'Main';
+    const filename = `${className}_${Date.now()}.java`;
     const filepath = path.join(this.tempDir, filename);
     
     try {
@@ -459,7 +463,7 @@ class CodeExecutionService {
         dockerPath = filepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm -v "${dockerPath}:/app/Main.java" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && java Main"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/${className}.java" eclipse-temurin:17-jdk sh -c "cd /app && javac ${className}.java && java ${className}"`;
       console.log(`Running: ${command.substring(0, 100)}...`);
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
@@ -724,7 +728,9 @@ class CodeExecutionService {
 
   async runJavaWithInput(code, input) {
     const startTime = Date.now();
-    const filename = `Main_${Date.now()}.java`;
+    const classMatch = code.match(/(?:public\s+)?class\s+([a-zA-Z0-9_]+)/);
+    const className = classMatch ? classMatch[1] : 'Main';
+    const filename = `${className}_${Date.now()}.java`;
     const filepath = path.join(this.tempDir, filename);
     
     try {
@@ -745,7 +751,7 @@ class CodeExecutionService {
         inputDockerPath = inputFilepath.replace(/^([A-Z]):\\/, '/$1/').replace(/\\/g, '/');
       }
       
-      const command = `docker run --rm -v "${dockerPath}:/app/Main.java" -v "${inputDockerPath}:/app/input.txt" openjdk:17-jdk-slim sh -c "cd /app && javac Main.java && cat /app/input.txt | java Main"`;
+      const command = `docker run --rm -v "${dockerPath}:/app/${className}.java" -v "${inputDockerPath}:/app/input.txt" eclipse-temurin:17-jdk sh -c "cd /app && javac ${className}.java && cat /app/input.txt | java ${className}"`;
       
       const { stdout, stderr } = await this.runDockerCommand(command, {
         timeout: 15000,
