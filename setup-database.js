@@ -797,7 +797,272 @@ const createTables = async () => {
             `, [institute.name, institute.display_name]);
         }
 
-        // 22. Run ANALYZE for query planner optimization
+        // 22. Create Student Messages Table
+        console.log('Creating student_messages table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS student_messages (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) DEFAULT 'Anonymous',
+                email VARCHAR(255),
+                message TEXT NOT NULL,
+                topic VARCHAR(100) DEFAULT 'General',
+                image_path VARCHAR(500),
+                status VARCHAR(20) DEFAULT 'unread',
+                student_id VARCHAR(100),
+                college VARCHAR(255),
+                conversation_id INTEGER,
+                sender_type VARCHAR(20) DEFAULT 'student',
+                parent_message_id INTEGER REFERENCES student_messages(id),
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                read_at TIMESTAMPTZ
+            );
+        `);
+
+        // Create indices for student_messages
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_status ON student_messages(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_created_at ON student_messages(created_at DESC);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_topic ON student_messages(topic);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_student_id ON student_messages(student_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_college ON student_messages(college);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_conversation ON student_messages(conversation_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_student_messages_sender ON student_messages(sender_type);`);
+
+        // 23. Create Interview Chat Messages Table
+        console.log('Creating interview_chat_messages table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS interview_chat_messages (
+                id SERIAL PRIMARY KEY,
+                interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+                sender_type VARCHAR(10) NOT NULL,
+                sender_name VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+
+        // Add check constraint for sender_type
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'interview_chat_messages_sender_type_check') THEN
+                    ALTER TABLE interview_chat_messages ADD CONSTRAINT interview_chat_messages_sender_type_check 
+                    CHECK (sender_type IN ('admin', 'student'));
+                END IF;
+            END $;
+        `);
+
+        // Create indices for interview_chat_messages
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interview_chat_interview_id ON interview_chat_messages(interview_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_interview_chat_created_at ON interview_chat_messages(created_at);`);
+
+        // 24. Create Forced Terminations Table
+        console.log('Creating forced_terminations table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS forced_terminations (
+                id SERIAL PRIMARY KEY,
+                student_id VARCHAR(255) NOT NULL,
+                test_id INTEGER NOT NULL,
+                admin_id VARCHAR(255) NOT NULL,
+                admin_name VARCHAR(255) NOT NULL,
+                reason TEXT NOT NULL,
+                violation_summary TEXT,
+                student_notified BOOLEAN DEFAULT FALSE,
+                termination_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Create indices for forced_terminations
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_forced_terminations_student_id ON forced_terminations(student_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_forced_terminations_test_id ON forced_terminations(test_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_forced_terminations_admin_id ON forced_terminations(admin_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_forced_terminations_timestamp ON forced_terminations(termination_timestamp);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_forced_terminations_created_at ON forced_terminations(created_at);`);
+
+        // Add columns to results table for forced terminations
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='results' AND column_name='termination_reason') THEN
+                    ALTER TABLE results ADD COLUMN termination_reason VARCHAR(50);
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='results' AND column_name='terminated_by') THEN
+                    ALTER TABLE results ADD COLUMN terminated_by VARCHAR(255);
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='results' AND column_name='is_forced_termination') THEN
+                    ALTER TABLE results ADD COLUMN is_forced_termination BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $;
+        `);
+
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_results_termination_reason ON results(termination_reason) WHERE termination_reason IS NOT NULL;`);
+
+        // 25. Create Job Openings Table
+        console.log('Creating job_openings table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS job_openings (
+                id SERIAL PRIMARY KEY,
+                company_name VARCHAR(255) NOT NULL,
+                job_role VARCHAR(255) NOT NULL,
+                job_description TEXT NOT NULL,
+                registration_deadline TIMESTAMPTZ NOT NULL,
+                eligibility_criteria TEXT NOT NULL,
+                application_link VARCHAR(500),
+                application_mode VARCHAR(20) DEFAULT 'external',
+                min_cgpa DECIMAL(3,2),
+                allowed_branches TEXT,
+                max_active_backlogs INTEGER,
+                admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+                status VARCHAR(20) DEFAULT 'draft',
+                is_published BOOLEAN DEFAULT false,
+                published_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Create indices for job_openings
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_openings_status ON job_openings(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_openings_published ON job_openings(is_published);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_openings_deadline ON job_openings(registration_deadline);`);
+
+        // 26. Create Job Notifications Table
+        console.log('Creating job_notifications table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS job_notifications (
+                id SERIAL PRIMARY KEY,
+                job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+                student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+                email_status VARCHAR(20) DEFAULT 'sent',
+                email_sent_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(job_opening_id, student_id)
+            );
+        `);
+
+        // Create indices for job_notifications
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_notifications_job ON job_notifications(job_opening_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_notifications_student ON job_notifications(student_id);`);
+
+        // 27. Create Job Applications Table
+        console.log('Creating job_applications table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS job_applications (
+                id SERIAL PRIMARY KEY,
+                job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+                student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+                resume_url TEXT,
+                cover_letter TEXT,
+                status VARCHAR(50) DEFAULT 'submitted',
+                is_eligible BOOLEAN DEFAULT true,
+                eligibility_notes TEXT,
+                test_assigned_at TIMESTAMPTZ,
+                test_completed_at TIMESTAMPTZ,
+                assessment_score DECIMAL(5,2),
+                passed_assessment BOOLEAN,
+                applied_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                reviewed_by INTEGER REFERENCES admins(id),
+                reviewed_at TIMESTAMPTZ,
+                UNIQUE(job_opening_id, student_id)
+            );
+        `);
+
+        // Create indices for job_applications
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_applications_student ON job_applications(student_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_applications_job ON job_applications(job_opening_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_applications_status ON job_applications(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_applications_applied_at ON job_applications(applied_at DESC);`);
+
+        // 28. Create Job Opening Tests Table
+        console.log('Creating job_opening_tests table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS job_opening_tests (
+                id SERIAL PRIMARY KEY,
+                job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+                test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+                is_mandatory BOOLEAN DEFAULT true,
+                weightage INTEGER DEFAULT 100,
+                passing_criteria INTEGER DEFAULT 50,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(job_opening_id, test_id)
+            );
+        `);
+
+        // Create indices for job_opening_tests
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_opening_tests_job ON job_opening_tests(job_opening_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_opening_tests_test ON job_opening_tests(test_id);`);
+
+        // 29. Create Job Eligibility Rules Table
+        console.log('Creating job_eligibility_rules table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS job_eligibility_rules (
+                id SERIAL PRIMARY KEY,
+                job_opening_id INTEGER NOT NULL REFERENCES job_openings(id) ON DELETE CASCADE,
+                rule_type VARCHAR(50) NOT NULL,
+                operator VARCHAR(20) NOT NULL,
+                value TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Create index for job_eligibility_rules
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_job_eligibility_rules_job ON job_eligibility_rules(job_opening_id);`);
+
+        // 30. Add job_application_id to test_attempts (if not exists)
+        console.log('Adding job_application_id to test_attempts...');
+        await client.query(`
+            DO $ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='test_attempts' AND column_name='job_application_id') THEN
+                    ALTER TABLE test_attempts ADD COLUMN job_application_id INTEGER REFERENCES job_applications(id) ON DELETE SET NULL;
+                END IF;
+            END $;
+        `);
+
+        // Drop old unique constraint and add new one with job_application_id
+        await client.query(`ALTER TABLE test_attempts DROP CONSTRAINT IF EXISTS test_attempts_student_id_test_id_key;`);
+        await client.query(`
+            DO $ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'test_attempts_student_test_application_unique') THEN
+                    ALTER TABLE test_attempts ADD CONSTRAINT test_attempts_student_test_application_unique 
+                    UNIQUE (student_id, test_id, job_application_id);
+                END IF;
+            END $;
+        `);
+
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_test_attempts_job_application ON test_attempts(job_application_id);`);
+
+        // 31. Add session_token and exam_started to exam_progress (if not exists)
+        console.log('Adding session_token and exam_started to exam_progress...');
+        await client.query(`
+            DO $ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='exam_progress' AND column_name='session_token') THEN
+                    ALTER TABLE exam_progress ADD COLUMN session_token VARCHAR(255) UNIQUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='exam_progress' AND column_name='session_created_at') THEN
+                    ALTER TABLE exam_progress ADD COLUMN session_created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='exam_progress' AND column_name='exam_started') THEN
+                    ALTER TABLE exam_progress ADD COLUMN exam_started BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $;
+        `);
+
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_exam_progress_session_token ON exam_progress(session_token);`);
+
+        // 32. Run ANALYZE for query planner optimization
         console.log('Analyzing tables for query optimization...');
         const tables = [
             'students', 'admins', 'tests', 'test_job_roles', 'questions', 
@@ -806,7 +1071,9 @@ const createTables = async () => {
             'proctoring_violations', 'proctoring_messages', 'interviews', 'otps',
             'institutes', 'institute_test_assignments', 'test_feedback', 
             'system_settings', 'coding_questions', 'coding_test_cases',
-            'student_coding_submissions'
+            'student_coding_submissions', 'student_messages', 'interview_chat_messages',
+            'forced_terminations', 'job_openings', 'job_notifications', 
+            'job_applications', 'job_opening_tests', 'job_eligibility_rules'
         ];
         
         for (const table of tables) {
@@ -825,11 +1092,15 @@ const createTables = async () => {
         console.log('   - Institute test assignments for institute-test mapping');
         console.log('   - Progress tracking with auto-save functionality');
         console.log('   - Proctoring sessions, violations, and messages');
-        console.log('   - Interviews scheduling and management');
+        console.log('   - Interviews scheduling and management with chat support');
         console.log('   - OTP system for email verification');
         console.log('   - Feedback system for student test feedback (test_feedback table)');
         console.log('   - System settings for maintenance mode and retry timer');
         console.log('   - Coding questions with test cases and submissions');
+        console.log('   - Student messages and support conversations');
+        console.log('   - Forced terminations tracking for admin-stopped tests');
+        console.log('   - Job openings and applications with assessment integration');
+        console.log('   - Job notifications and eligibility rules');
         console.log('   - Performance indexes for 300+ concurrent users');
         console.log('   - Default admin account (admin@example.com / admin123)');
 
