@@ -31,6 +31,23 @@ async function ensureDefaultTestSettingsColumns(db = pool) {
     settingsColumnsEnsured = true;
 }
 
+let jobRolesTableEnsured = false;
+async function ensureJobRolesTable(db = pool) {
+    if (jobRolesTableEnsured) return;
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS test_job_roles (
+            id SERIAL PRIMARY KEY,
+            test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+            job_role VARCHAR(255) NOT NULL,
+            job_description TEXT,
+            is_default BOOLEAN DEFAULT false,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(test_id, job_role)
+        )
+    `);
+    jobRolesTableEnsured = true;
+}
+
 async function getConfiguredDefaultJobDetails(db = pool) {
     try {
         await ensureDefaultTestSettingsColumns(db);
@@ -238,26 +255,20 @@ router.post('/questions', verifyAdmin, upload.single('file'), async (req, res) =
 
         // 1.5. Insert multiple job roles if provided
         if (normalizedJobRoles.length > 0) {
-            await client.query(`
-                CREATE TABLE IF NOT EXISTS test_job_roles (
-                    id SERIAL PRIMARY KEY,
-                    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
-                    job_role VARCHAR(255) NOT NULL,
-                    job_description TEXT,
-                    is_default BOOLEAN DEFAULT false,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(test_id, job_role)
-                )
-            `);
+            await ensureJobRolesTable(client);
 
-            for (let i = 0; i < normalizedJobRoles.length; i++) {
-                const role = normalizedJobRoles[i];
-                await client.query(`
-                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (test_id, job_role) DO NOTHING
-                `, [testId, role.job_role, role.job_description || '', i === 0]);
-            }
+            // Batch insert all job roles in one query
+            const roleValues = normalizedJobRoles.map((_, i) =>
+                `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+            ).join(', ');
+            const roleParams = normalizedJobRoles.flatMap((role, i) => [
+                testId, role.job_role, role.job_description || '', i === 0
+            ]);
+            await client.query(
+                `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                 VALUES ${roleValues} ON CONFLICT (test_id, job_role) DO NOTHING`,
+                roleParams
+            );
         }
 
         // 2. ✅ FIX: Bulk insert all questions in a single query
@@ -473,26 +484,20 @@ router.post('/manual', verifyAdmin, async (req, res) => {
         const testId = testResult.rows[0].id;
 
         if (normalizedJobRoles.length > 0) {
-            await client.query(`
-                CREATE TABLE IF NOT EXISTS test_job_roles (
-                    id SERIAL PRIMARY KEY,
-                    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
-                    job_role VARCHAR(255) NOT NULL,
-                    job_description TEXT,
-                    is_default BOOLEAN DEFAULT false,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(test_id, job_role)
-                )
-            `);
+            await ensureJobRolesTable(client);
 
-            for (let i = 0; i < normalizedJobRoles.length; i++) {
-                const role = normalizedJobRoles[i];
-                await client.query(`
-                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (test_id, job_role) DO NOTHING
-                `, [testId, role.job_role, role.job_description || '', i === 0]);
-            }
+            // Batch insert in one query
+            const roleValues = normalizedJobRoles.map((_, i) =>
+                `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+            ).join(', ');
+            const roleParams = normalizedJobRoles.flatMap((role, i) => [
+                testId, role.job_role, role.job_description || '', i === 0
+            ]);
+            await client.query(
+                `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                 VALUES ${roleValues} ON CONFLICT (test_id, job_role) DO NOTHING`,
+                roleParams
+            );
         }
 
         // ✅ FIX: Bulk insert manual questions in a single query
@@ -650,14 +655,18 @@ router.put('/questions/:testId', verifyAdmin, upload.single('file'), async (req,
         if (normalizedJobRoles.length > 0) {
             await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
 
-            for (let i = 0; i < normalizedJobRoles.length; i++) {
-                const role = normalizedJobRoles[i];
-                await client.query(`
-                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (test_id, job_role) DO NOTHING
-                `, [testId, role.job_role, role.job_description || '', i === 0]);
-            }
+            // Batch insert in one query
+            const roleValues = normalizedJobRoles.map((_, i) =>
+                `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+            ).join(', ');
+            const roleParams = normalizedJobRoles.flatMap((role, i) => [
+                testId, role.job_role, role.job_description || '', i === 0
+            ]);
+            await client.query(
+                `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                 VALUES ${roleValues} ON CONFLICT (test_id, job_role) DO NOTHING`,
+                roleParams
+            );
         } else {
             await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
         }

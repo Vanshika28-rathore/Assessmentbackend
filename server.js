@@ -14,6 +14,9 @@ const { pool } = require('./config/db');
 require('./config/firebase'); // Initialize Firebase Admin SDK
 const { logger, expressLogger } = require('./config/logger');
 
+// Import cleanup job
+const cleanupOldMessages = require('./jobs/cleanupOldMessages');
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const adminAuthRoutes = require('./routes/adminAuth');
@@ -429,6 +432,41 @@ let rotationInterval = setInterval(() => {
         selectStudentsForMonitoring();
     }
 }, PROCTORING_CONFIG.ROTATION_INTERVAL * 60 * 1000);
+
+// Cleanup old messages daily at 2 AM
+const scheduleCleanup = () => {
+    const now = new Date();
+    const next2AM = new Date(now);
+    next2AM.setHours(2, 0, 0, 0);
+    
+    // If it's past 2 AM today, schedule for tomorrow
+    if (now > next2AM) {
+        next2AM.setDate(next2AM.getDate() + 1);
+    }
+    
+    const timeUntilCleanup = next2AM - now;
+    
+    logger.info({
+        nextCleanup: next2AM.toISOString(),
+        hoursUntil: (timeUntilCleanup / (1000 * 60 * 60)).toFixed(2)
+    }, 'Scheduled daily message cleanup');
+    
+    setTimeout(() => {
+        cleanupOldMessages()
+            .then(result => {
+                logger.info(result, 'Daily cleanup completed');
+            })
+            .catch(error => {
+                logger.error({ err: error }, 'Daily cleanup failed');
+            });
+        
+        // Schedule next cleanup (24 hours later)
+        scheduleCleanup();
+    }, timeUntilCleanup);
+};
+
+// Start cleanup scheduler
+scheduleCleanup();
 
 io.on('connection', (socket) => {
     logger.info({

@@ -78,7 +78,7 @@ router.get('/test/:testId', verifyAdmin, async (req, res) => {
                 s.full_name as student_name,
                 s.email as student_email
              FROM test_feedback tf
-             LEFT JOIN students s ON tf.student_id = s.id::text
+             LEFT JOIN students s ON tf.student_id = s.firebase_uid
              WHERE tf.test_id = $1
              ORDER BY tf.created_at DESC`,
             [testId]

@@ -52,13 +52,18 @@ function applyDefaultJobDetails(jobRole, jobDescription, defaults = { job_role: 
     };
 }
 
+// Cache for tests table column set — queried once per server lifetime, not per request
+let _cachedTestColumns = null;
+
 async function getTestsColumnSet() {
+    if (_cachedTestColumns) return _cachedTestColumns;
     const result = await pool.query(`
         SELECT column_name
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'tests'
     `);
-    return new Set(result.rows.map((r) => r.column_name));
+    _cachedTestColumns = new Set(result.rows.map((r) => r.column_name));
+    return _cachedTestColumns;
 }
 
 /**
@@ -109,11 +114,17 @@ router.get('/', verifyAdmin, async (req, res) => {
                 t.max_attempts,
                 t.start_datetime,
                 t.end_datetime,
-                (COUNT(DISTINCT q.id) + COUNT(DISTINCT cq.id)) as question_count
+                t.passing_percentage,
+                (SELECT COUNT(*) FROM questions WHERE test_id = t.id) + 
+                (SELECT COUNT(*) FROM coding_questions WHERE test_id = t.id) as question_count,
+                (SELECT COUNT(*) FROM test_attempts WHERE test_id = t.id) as total_attempts,
+                (SELECT COUNT(*) FROM test_attempts WHERE test_id = t.id AND percentage >= t.passing_percentage) as pass_count,
+                CASE 
+                    WHEN (SELECT COUNT(*) FROM test_attempts WHERE test_id = t.id) > 0 
+                    THEN ROUND((SELECT COUNT(*) FROM test_attempts WHERE test_id = t.id AND percentage >= t.passing_percentage) * 100.0 / (SELECT COUNT(*) FROM test_attempts WHERE test_id = t.id), 2)
+                    ELSE 0 
+                END as pass_percentage
             FROM tests t
-            LEFT JOIN questions q ON t.id = q.test_id
-            LEFT JOIN coding_questions cq ON t.id = cq.test_id
-            GROUP BY t.id, t.title, t.description, t.job_role, t.created_at, t.status, t.duration, t.max_attempts, t.start_datetime, t.end_datetime
             ORDER BY t.created_at DESC
         `);
 
@@ -138,17 +149,7 @@ router.get('/', verifyAdmin, async (req, res) => {
  */
 router.get('/institutes', verifyAdmin, async (req, res) => {
     try {
-        // First, ensure institutes table exists
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS institutes (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                display_name VARCHAR(255) NOT NULL,
-                created_by VARCHAR(255) DEFAULT 'admin',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
-            )
-        `);
+        await ensureInstitutesTable();
 
         // Simple query to get institutes from students table
         const result = await pool.query(`
@@ -703,16 +704,21 @@ router.put('/:id', verifyAdmin, async (req, res) => {
             WHERE id = $${whereParamIndex}
         `, queryParams);
 
-        // Update job roles
-        // Delete existing job roles and insert normalized non-empty roles
+        // Batch insert job roles in one query instead of N individual inserts
         await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [id]);
-        for (let i = 0; i < normalizedJobRoles.length; i++) {
-            const role = normalizedJobRoles[i];
-            await client.query(`
-                INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (test_id, job_role) DO NOTHING
-            `, [id, role.job_role, role.job_description, i === 0]);
+        if (normalizedJobRoles.length > 0) {
+            const roleValues = normalizedJobRoles.map((_, i) =>
+                `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+            ).join(', ');
+            const roleParams = normalizedJobRoles.flatMap((role, i) => [
+                id, role.job_role, role.job_description, i === 0
+            ]);
+            await client.query(
+                `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                 VALUES ${roleValues}
+                 ON CONFLICT (test_id, job_role) DO NOTHING`,
+                roleParams
+            );
         }
 
         // Update questions if provided
@@ -778,53 +784,46 @@ router.delete('/bulk', verifyAdmin, async (req, res) => {
         console.log(`[BULK DELETE] Starting deletion for ${test_ids.length} tests`);
         
         await client.query('BEGIN');
-        
-        let deletedCount = 0;
-        const errors = [];
 
-        for (const testId of test_ids) {
-            try {
-                // Get test details
-                const testResult = await client.query('SELECT title FROM tests WHERE id = $1', [testId]);
-                
-                if (testResult.rows.length === 0) {
-                    errors.push({ testId, error: 'Test not found' });
-                    continue;
-                }
-                
-                const testTitle = testResult.rows[0].title;
-                
-                // Delete related data
-                await client.query('DELETE FROM institute_test_assignments WHERE test_id = $1', [testId]);
-                await client.query('DELETE FROM test_assignments WHERE test_id = $1', [testId]);
-                await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
-                
-                // Delete exams and results
-                const examsResult = await client.query('SELECT id FROM exams WHERE name = $1', [testTitle]);
-                const examIds = examsResult.rows.map(row => row.id);
-                
-                if (examIds.length > 0) {
-                    await client.query('DELETE FROM results WHERE exam_id = ANY($1)', [examIds]);
-                    await client.query('DELETE FROM exams WHERE id = ANY($1)', [examIds]);
-                }
-                
-                await client.query('DELETE FROM exam_progress WHERE test_id = $1', [testId]);
-                await client.query('DELETE FROM questions WHERE test_id = $1', [testId]);
-                await client.query('DELETE FROM tests WHERE id = $1', [testId]);
-                
-                deletedCount++;
-            } catch (error) {
-                errors.push({ testId, error: error.message });
+        // Fetch all valid test titles at once
+        const testResults = await client.query(
+            'SELECT id, title FROM tests WHERE id = ANY($1)',
+            [test_ids]
+        );
+        const foundIds = testResults.rows.map(r => r.id);
+        const notFoundIds = test_ids.filter(id => !foundIds.includes(id));
+        const errors = notFoundIds.map(id => ({ testId: id, error: 'Test not found' }));
+
+        if (foundIds.length > 0) {
+            // Batch delete all related data in single queries instead of per-test loops
+            await client.query('DELETE FROM institute_test_assignments WHERE test_id = ANY($1)', [foundIds]);
+            await client.query('DELETE FROM test_assignments WHERE test_id = ANY($1)', [foundIds]);
+            await client.query('DELETE FROM test_job_roles WHERE test_id = ANY($1)', [foundIds]);
+            await client.query('DELETE FROM exam_progress WHERE test_id = ANY($1)', [foundIds]);
+
+            // Delete exam results: find exams matching test titles then delete results
+            const examNames = testResults.rows.map(r => r.title);
+            const examsResult = await client.query(
+                'SELECT id FROM exams WHERE name = ANY($1)',
+                [examNames]
+            );
+            const examIds = examsResult.rows.map(r => r.id);
+            if (examIds.length > 0) {
+                await client.query('DELETE FROM results WHERE exam_id = ANY($1)', [examIds]);
+                await client.query('DELETE FROM exams WHERE id = ANY($1)', [examIds]);
             }
+
+            await client.query('DELETE FROM questions WHERE test_id = ANY($1)', [foundIds]);
+            await client.query('DELETE FROM tests WHERE id = ANY($1)', [foundIds]);
         }
-        
+
         await client.query('COMMIT');
-        console.log(`[BULK DELETE] Successfully deleted ${deletedCount} tests`);
+        console.log(`[BULK DELETE] Successfully deleted ${foundIds.length} tests`);
 
         res.json({
             success: true,
-            message: `Successfully deleted ${deletedCount} test(s)`,
-            deleted_count: deletedCount,
+            message: `Successfully deleted ${foundIds.length} test(s)`,
+            deleted_count: foundIds.length,
             errors: errors.length > 0 ? errors : undefined
         });
     } catch (error) {
@@ -1041,23 +1040,21 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
 
         console.log(`[CLONE TEST] Cloning ${questions.rows.length} questions`);
 
-        for (const question of questions.rows) {
-            await client.query(`
-                INSERT INTO questions (
-                    test_id, question_text, option_a, option_b, 
-                    option_c, option_d, correct_option, marks
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            `, [
-                newTestId,
-                question.question_text,
-                question.option_a,
-                question.option_b,
-                question.option_c,
-                question.option_d,
-                question.correct_option,
-                question.marks
+        // Bulk insert all clone questions in one query instead of N round trips
+        if (questions.rows.length > 0) {
+            const qValues = questions.rows.map((_, i) => {
+                const b = i * 8;
+                return `($${b+1}, $${b+2}, $${b+3}, $${b+4}, $${b+5}, $${b+6}, $${b+7}, $${b+8})`;
+            }).join(', ');
+            const qParams = questions.rows.flatMap(q => [
+                newTestId, q.question_text, q.option_a, q.option_b,
+                q.option_c, q.option_d, q.correct_option, q.marks
             ]);
+            await client.query(
+                `INSERT INTO questions (test_id, question_text, option_a, option_b, option_c, option_d, correct_option, marks)
+                 VALUES ${qValues}`,
+                qParams
+            );
         }
 
         // Clone job roles. Ensure at least one non-empty default role exists in the cloned test.
@@ -1074,23 +1071,27 @@ router.post('/:id/clone', verifyAdmin, async (req, res) => {
             originalJobRoles = [];
         }
 
-        if (originalJobRoles.length > 0) {
-            for (let i = 0; i < originalJobRoles.length; i++) {
-                const role = originalJobRoles[i];
-                const normalizedRole = applyDefaultJobDetails(role.job_role, role.job_description, configuredDefaults);
-                await client.query(`
-                    INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (test_id, job_role) DO NOTHING
-                `, [newTestId, normalizedRole.job_role, normalizedRole.job_description, i === 0]);
-            }
-        } else {
-            await client.query(`
-                INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                VALUES ($1, $2, $3, true)
-                ON CONFLICT (test_id, job_role) DO NOTHING
-            `, [newTestId, clonedJobRole, clonedJobDescription]);
-        }
+        // Batch insert cloned job roles in one query
+        const rolesToInsert = originalJobRoles.length > 0 ? originalJobRoles : [
+            { job_role: clonedJobRole, job_description: clonedJobDescription, is_default: true }
+        ];
+        const normalizedRoles = rolesToInsert.map((role, i) => {
+            const nr = originalJobRoles.length > 0
+                ? applyDefaultJobDetails(role.job_role, role.job_description, configuredDefaults)
+                : { job_role: clonedJobRole, job_description: clonedJobDescription };
+            return { ...nr, is_default: i === 0 };
+        });
+        const rValues = normalizedRoles.map((_, i) =>
+            `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+        ).join(', ');
+        const rParams = normalizedRoles.flatMap(r => [
+            newTestId, r.job_role, r.job_description, r.is_default
+        ]);
+        await client.query(
+            `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+             VALUES ${rValues} ON CONFLICT (test_id, job_role) DO NOTHING`,
+            rParams
+        );
 
         await client.query('COMMIT');
         console.log(`[CLONE TEST] Successfully cloned test`);
@@ -1143,17 +1144,7 @@ router.post('/assign', verifyAdmin, async (req, res) => {
 
         await client.query('BEGIN');
 
-        // Create test_assignments table if it doesn't exist
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS test_assignments (
-                id SERIAL PRIMARY KEY,
-                test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
-                student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true,
-                UNIQUE(test_id, student_id)
-            )
-        `);
+        await ensureAssignmentsTable(client);
 
         // Check which students already have this test assigned
         const existingAssignments = await client.query(`
@@ -1333,30 +1324,25 @@ router.post('/:testId/job-roles', verifyAdmin, async (req, res) => {
 
         await client.query('BEGIN');
 
-        // Create table if it doesn't exist
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS test_job_roles (
-                id SERIAL PRIMARY KEY,
-                test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
-                job_role VARCHAR(255) NOT NULL,
-                job_description TEXT,
-                is_default BOOLEAN DEFAULT false,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(test_id, job_role)
-            )
-        `);
+        await ensureJobRolesTable(client);
 
         // Delete existing job roles for this test
         await client.query('DELETE FROM test_job_roles WHERE test_id = $1', [testId]);
 
-        // Insert new job roles
-        for (let i = 0; i < normalizedJobRoles.length; i++) {
-            const role = normalizedJobRoles[i];
-            await client.query(`
-                INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (test_id, job_role) DO NOTHING
-            `, [testId, role.job_role, role.job_description, i === 0]);
+        // Batch insert all job roles in one query
+        if (normalizedJobRoles.length > 0) {
+            const roleValues = normalizedJobRoles.map((_, i) =>
+                `($${i*4+1}, $${i*4+2}, $${i*4+3}, $${i*4+4})`
+            ).join(', ');
+            const roleParams = normalizedJobRoles.flatMap((role, i) => [
+                testId, role.job_role, role.job_description, i === 0
+            ]);
+            await client.query(
+                `INSERT INTO test_job_roles (test_id, job_role, job_description, is_default)
+                 VALUES ${roleValues}
+                 ON CONFLICT (test_id, job_role) DO NOTHING`,
+                roleParams
+            );
         }
 
         // Update the default job role in tests table for backward compatibility

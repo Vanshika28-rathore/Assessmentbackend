@@ -6,6 +6,7 @@ const { pool, cachedQuery, clearCache } = require('../config/db');
 const verifyAdmin = require('../middleware/verifyAdmin');
 const verifyToken = require('../middleware/verifyToken'); // Only for register
 const { verifySession } = require('../middleware/verifySession'); // For all other routes
+const firebaseAdmin = require('../config/firebase'); // Required once at module load (was inside request handlers)
 
 /**
  * GET /api/student/tests
@@ -612,8 +613,7 @@ router.post('/submit-exam', async (req, res) => {
             }
 
             try {
-                const admin = require('../config/firebase');
-                const decodedToken = await admin.auth().verifyIdToken(token);
+                const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
                 firebaseUid = decodedToken.uid;
                 
                 // Get student ID from Firebase UID
@@ -841,20 +841,28 @@ router.post('/submit-exam', async (req, res) => {
         const status = percentage >= 50 ? 'Pass' : 'Fail';
 
         // 5. Find or create exam record
+        // FIX: Use INSERT ... ON CONFLICT DO NOTHING so the same exam name (= test title)
+        // is never duplicated. Previously, every submission created a brand-new exam row,
+        // resulting in thousands of duplicate rows.
         let finalExamId = examId;
-        
+
         if (!finalExamId) {
-            // Create a new exam record if not provided
             const testInfo = await pool.query('SELECT title FROM tests WHERE id = $1', [testId]);
             const examName = testInfo.rows[0]?.title || 'Exam';
-            
-            const examResult = await pool.query(`
+
+            // Try to insert; if the name already exists, do nothing and then fetch
+            await pool.query(`
                 INSERT INTO exams (name, date, duration)
                 VALUES ($1, CURRENT_DATE, 60)
-                RETURNING id
+                ON CONFLICT (name) DO NOTHING
             `, [examName]);
-            
-            finalExamId = examResult.rows[0].id;
+
+            // Now fetch the canonical exam id (whether just inserted or pre-existing)
+            const examRow = await pool.query(
+                'SELECT id FROM exams WHERE name = $1',
+                [examName]
+            );
+            finalExamId = examRow.rows[0].id;
         }
 
         // 6. Store result in database
@@ -1204,11 +1212,9 @@ router.delete('/bulk', verifyAdmin, async (req, res) => {
         let firebaseErrors = 0;
 
         if (firebaseUids.length > 0) {
-            const admin = require('../config/firebase');
-            
             for (const uid of firebaseUids) {
                 try {
-                    await admin.auth().deleteUser(uid);
+                    await firebaseAdmin.auth().deleteUser(uid);
                     firebaseDeleteCount++;
                     console.log(`✅ Deleted Firebase user: ${uid}`);
                 } catch (firebaseError) {
@@ -1272,8 +1278,7 @@ router.delete('/:id', verifyAdmin, async (req, res) => {
         // Then delete from Firebase if firebase_uid exists
         if (firebaseUid) {
             try {
-                const admin = require('../config/firebase');
-                await admin.auth().deleteUser(firebaseUid);
+                await firebaseAdmin.auth().deleteUser(firebaseUid);
                 console.log(`✅ Deleted Firebase user: ${firebaseUid}`);
             } catch (firebaseError) {
                 // Log error but don't fail the request since DB deletion succeeded

@@ -127,3 +127,12 @@ certs/
 # ============================================
 test-integration.js
 verify-setup.js
+db-audit-after-fix.txt
+db-audit-clean.txt
+db-audit-plain.js
+db-audit-results.txt
+db-audit.js
+db-current-state.txt
+db-fix-results.txt
+master-fix-results.txt
+master-fix-results2.txt
