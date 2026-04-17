@@ -560,6 +560,7 @@ router.post('/save-progress', verifySession, async (req, res) => {
  */
 router.post('/submit-exam', async (req, res) => {
     const { testId, answers, examId, submissionReason, warningCount, timeRemaining, studentId: clientStudentId, applicationId } = req.body;
+    let studentId;
 
     console.log('=== SUBMIT EXAM REQUEST ===');
     console.log('Test ID:', testId);
@@ -570,7 +571,6 @@ router.post('/submit-exam', async (req, res) => {
     console.log('Time Remaining:', timeRemaining);
 
     try {
-        let studentId;
         let firebaseUid;
 
         // CRITICAL FIX: Check if student has exam progress (already started exam)
@@ -891,15 +891,38 @@ router.post('/submit-exam', async (req, res) => {
 
         // Update job application test_attempts and auto-update application status
         if (resolvedApplicationId) {
-            await pool.query(`
-                INSERT INTO test_attempts (student_id, test_id, job_application_id, total_marks, obtained_marks, percentage, submitted_at)
-                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-                ON CONFLICT (student_id, test_id, job_application_id) DO UPDATE SET
-                    total_marks = EXCLUDED.total_marks,
-                    obtained_marks = EXCLUDED.obtained_marks,
-                    percentage = EXCLUDED.percentage,
+            const attemptUpdate = await pool.query(`
+                UPDATE test_attempts
+                SET total_marks = $4,
+                    obtained_marks = $5,
+                    percentage = $6,
                     submitted_at = CURRENT_TIMESTAMP
+                WHERE student_id = $1
+                  AND test_id = $2
+                  AND job_application_id = $3
             `, [studentId, testId, resolvedApplicationId, totalMarks, marksObtained, percentage]);
+
+            if (attemptUpdate.rowCount === 0) {
+                await pool.query(`
+                    INSERT INTO test_attempts (
+                        student_id,
+                        test_id,
+                        job_application_id,
+                        total_marks,
+                        obtained_marks,
+                        percentage,
+                        submitted_at
+                    )
+                    SELECT $1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM test_attempts
+                        WHERE student_id = $1
+                          AND test_id = $2
+                          AND job_application_id = $3
+                    )
+                `, [studentId, testId, resolvedApplicationId, totalMarks, marksObtained, percentage]);
+            }
 
             try {
                 const totalTestsResult = await pool.query(`

@@ -663,6 +663,25 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Audio chunk relay for live proctoring (admin decides per-student playback)
+    socket.on('proctoring:audio', (data) => {
+        const { studentId, studentName, testId, testTitle, audioDataUrl, timestamp } = data;
+
+        if (!studentId || !audioDataUrl) {
+            return;
+        }
+
+        // Relay to admins; playback remains disabled by default on admin UI until manually enabled per student.
+        io.to('admin-room').emit('proctoring:audio', {
+            studentId,
+            studentName,
+            testId,
+            testTitle,
+            audioDataUrl,
+            timestamp,
+        });
+    });
+
     // AI Violation detected - Store and alert admins
     socket.on('proctoring:ai-violation', async (data) => {
         const { studentId, testId, violation, timestamp } = data;
