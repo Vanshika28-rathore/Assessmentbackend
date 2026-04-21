@@ -157,16 +157,17 @@ router.post('/:id/publish', verifyAdmin, async (req, res) => {
             if (emailResult.success) emailsSent += batch.length;
             else emailsFailed += batch.length;
 
-            // Log each student notification
-            for (const student of batch) {
-                await query(
-                    `INSERT INTO job_notifications (job_opening_id, student_id, email_status)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (job_opening_id, student_id)
-                     DO UPDATE SET email_status = EXCLUDED.email_status, email_sent_at = CURRENT_TIMESTAMP`,
-                    [id, student.id, status]
-                );
-            }
+            // ✅ FIX: Batch insert all student notifications for this batch in one query
+            const notifyValues = batch.map((_, idx) => `($1, $${idx + 2}, $${batch.length + 2})`).join(', ');
+            const notifyParams = [id, ...batch.map(s => s.id), status];
+
+            await query(
+                `INSERT INTO job_notifications (job_opening_id, student_id, email_status)
+                 VALUES ${notifyValues}
+                 ON CONFLICT (job_opening_id, student_id)
+                 DO UPDATE SET email_status = EXCLUDED.email_status, email_sent_at = CURRENT_TIMESTAMP`,
+                notifyParams
+            );
 
             // Throttle between batches (skip delay after last batch)
             if (i + BATCH_SIZE < students.length) {

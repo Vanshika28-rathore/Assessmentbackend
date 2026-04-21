@@ -3,25 +3,41 @@ const router = express.Router();
 const { pool } = require('../config/db');
 const verifyAdmin = require('../middleware/verifyAdmin');
 
+// One-time startup flag — prevents DDL statements from running on every request
+let _tablesEnsured = false;
+async function ensureInstituteTables() {
+    if (_tablesEnsured) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS institutes (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            display_name VARCHAR(255) NOT NULL,
+            created_by VARCHAR(255) DEFAULT 'admin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT true
+        );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_institutes_name ON institutes(LOWER(name));`);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS institute_test_assignments (
+            id SERIAL PRIMARY KEY,
+            institute_id INTEGER REFERENCES institutes(id) ON DELETE CASCADE,
+            test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT true,
+            UNIQUE(institute_id, test_id)
+        )
+    `);
+    _tablesEnsured = true;
+}
+
 /**
  * GET /api/institutes/public
  * Fetch active institutes for student registration (public endpoint)
  */
 router.get('/public', async (req, res) => {
     try {
-        console.log('=== GET /api/institutes/public called ===');
-        
-        // Ensure the institutes table exists
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS institutes (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                display_name VARCHAR(255) NOT NULL,
-                created_by VARCHAR(255) DEFAULT 'admin',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
-            );
-        `);
+        await ensureInstituteTables();
 
         // Get all active institutes
         const result = await pool.query(`
@@ -30,8 +46,6 @@ router.get('/public', async (req, res) => {
             WHERE is_active = true
             ORDER BY display_name ASC
         `);
-
-        console.log('Active institutes found:', result.rows.length);
 
         res.json({
             success: true,
@@ -53,46 +67,11 @@ router.get('/public', async (req, res) => {
  */
 router.get('/', verifyAdmin, async (req, res) => {
     try {
-        console.log('=== GET /api/institutes called ===');
-        
-        // First, ensure the institutes table exists
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS institutes (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                display_name VARCHAR(255) NOT NULL,
-                created_by VARCHAR(255) DEFAULT 'admin',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
-            );
-        `);
-        
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_institutes_name ON institutes(LOWER(name));`);
-        
-        console.log('Institutes table ensured');
+        await ensureInstituteTables();
 
-        // Create the institute_test_assignments table if it doesn't exist
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS institute_test_assignments (
-                id SERIAL PRIMARY KEY,
-                institute_id INTEGER REFERENCES institutes(id) ON DELETE CASCADE,
-                test_id INTEGER REFERENCES tests(id) ON DELETE CASCADE,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true,
-                UNIQUE(institute_id, test_id)
-            )
-        `);
-        
-        console.log('institute_test_assignments table ensured');
-
-        // Check if we have any institutes, if not, create from existing student data
+        // Auto-create institute records from student data (only runs if table was empty)
         const existingInstitutes = await pool.query('SELECT COUNT(*) as count FROM institutes');
-        console.log('Existing institutes count:', existingInstitutes.rows[0].count);
-
         if (existingInstitutes.rows[0].count === '0') {
-            console.log('No institutes found, migrating from student data...');
-            
-            // Auto-create missing institute records for existing students
             await pool.query(`
                 INSERT INTO institutes (name, display_name, created_by)
                 SELECT DISTINCT 
@@ -111,8 +90,6 @@ router.get('/', verifyAdmin, async (req, res) => {
                 )
                 ON CONFLICT (name) DO NOTHING
             `);
-
-            // Add default institutes
             await pool.query(`
                 INSERT INTO institutes (name, display_name, created_by)
                 VALUES 
@@ -120,18 +97,7 @@ router.get('/', verifyAdmin, async (req, res) => {
                     ('other', 'Other', 'system')
                 ON CONFLICT (name) DO NOTHING
             `);
-
-            console.log('Migration completed');
         }
-
-        // Update students with missing institute data
-        await pool.query(`
-            UPDATE students 
-            SET institute = COALESCE(NULLIF(TRIM(institute), ''), NULLIF(TRIM(college_name), ''), 'not specified')
-            WHERE institute IS NULL OR TRIM(institute) = ''
-        `);
-
-        console.log('Student institute data updated');
 
         // Get all institutes with student counts
         const result = await pool.query(`
@@ -1016,6 +982,101 @@ router.get('/:id/registration-status', async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch registration status',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * GET /api/institutes/students/:studentId/assigned-tests
+ * Get all tests assigned to a specific student (admin only)
+ */
+router.get('/students/:studentId/assigned-tests', verifyAdmin, async (req, res) => {
+    const { studentId } = req.params;
+
+    try {
+        const testsResult = await pool.query(`
+            SELECT 
+                t.id,
+                t.title,
+                t.duration as duration_minutes,
+                (SELECT COUNT(*) FROM questions WHERE test_id = t.id) + 
+                (SELECT COUNT(*) FROM coding_questions WHERE test_id = t.id) as question_count,
+                ta.assigned_at,
+                (SELECT COUNT(*) FROM results r
+                 INNER JOIN exams e ON r.exam_id = e.id
+                 WHERE r.student_id = $1 
+                 AND e.name LIKE '%' || t.title || '%') as attempts_taken,
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM results r
+                        INNER JOIN exams e ON r.exam_id = e.id
+                        WHERE r.student_id = $1 
+                        AND e.name LIKE '%' || t.title || '%'
+                    ) THEN 'completed'
+                    WHEN EXISTS (
+                        SELECT 1 FROM exam_progress ep
+                        WHERE ep.student_id = $1 
+                        AND ep.test_id = t.id
+                    ) THEN 'in_progress'
+                    ELSE 'not_started'
+                END as status
+            FROM tests t
+            INNER JOIN test_assignments ta ON t.id = ta.test_id
+            WHERE ta.student_id = $1 AND ta.is_active = true
+            ORDER BY ta.assigned_at DESC
+        `, [studentId]);
+
+        res.json({
+            success: true,
+            tests: testsResult.rows
+        });
+    } catch (error) {
+        console.error('Error fetching student tests:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch assigned tests',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * DELETE /api/institutes/students/:studentId/unassign-test/:testId
+ * Unassign a test from a specific student (admin only)
+ */
+router.delete('/students/:studentId/unassign-test/:testId', verifyAdmin, async (req, res) => {
+    const { studentId, testId } = req.params;
+
+    try {
+        // Check if the assignment exists
+        const checkResult = await pool.query(
+            'SELECT * FROM test_assignments WHERE student_id = $1 AND test_id = $2',
+            [studentId, testId]
+        );
+
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Test assignment not found'
+            });
+        }
+
+        // Delete the assignment
+        await pool.query(
+            'DELETE FROM test_assignments WHERE student_id = $1 AND test_id = $2',
+            [studentId, testId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Test unassigned successfully'
+        });
+    } catch (error) {
+        console.error('Error unassigning test:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to unassign test',
             error: error.message
         });
     }

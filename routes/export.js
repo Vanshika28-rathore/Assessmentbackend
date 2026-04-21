@@ -48,7 +48,7 @@ router.get('/all-results', verifyAdmin, async (req, res) => {
         INNER JOIN students s ON r.student_id = s.id
         LEFT JOIN institutes i ON LOWER(s.institute) = i.name
         LEFT JOIN tests t ON t.title = e.name
-        LEFT JOIN proctoring_violations pv ON pv.student_id = s.id::VARCHAR AND pv.test_id = t.id
+        LEFT JOIN proctoring_violations pv ON pv.student_id = s.firebase_uid AND pv.test_id = t.id
         WHERE t.id IS NOT NULL
         GROUP BY r.id, r.marks_obtained, r.total_marks, r.created_at, e.name, e.date, s.full_name, s.roll_number, s.email, s.id, i.display_name, s.institute, t.id, t.duration, t.max_attempts, t.passing_percentage, t.start_datetime, t.end_datetime
       )

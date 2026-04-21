@@ -38,7 +38,7 @@ async function getViolationsDataForExport(testId) {
         MAX(pv.timestamp) as last_violation,
         MIN(pv.timestamp) as first_violation
       FROM proctoring_violations pv
-      LEFT JOIN students s ON pv.student_id = s.id::text
+      LEFT JOIN students s ON pv.student_id = s.firebase_uid
       WHERE pv.test_id = $1
       GROUP BY pv.student_id, s.full_name, s.email, s.phone, s.roll_number
       ORDER BY total_violations DESC`,

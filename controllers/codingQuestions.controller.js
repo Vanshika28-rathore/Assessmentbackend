@@ -38,65 +38,80 @@ class CodingQuestionsController {
 
       let savedCount = 0;
 
-      for (const question of codingQuestions) {
-        // Insert coding question
-        const questionResult = await client.query(
+      if (codingQuestions.length > 0) {
+        // Step 1: Batch insert all coding questions and get their IDs
+        // We'll insert one by one inside the loop but return them? 
+        // Actually, for multiple questions, we can use UNNEST or just a single multi-row INSERT if the data is clean.
+        // But since we need the IDs to map test cases, and Postgres supports multi-row RETURNING, we can batch insert.
+        
+        const questionValues = codingQuestions.map((_, i) => 
+          `($1, $${i*5+2}, $${i*5+3}, $${i*5+4}, $${i*5+5}, $${i*5+6}, NOW(), NOW())`
+        ).join(', ');
+        const questionParams = [testId];
+        codingQuestions.forEach((q, i) => {
+          questionParams.push(q.title || 'Untitled', q.description || '', q.timeLimit || 2, q.memoryLimit || 256, i);
+        });
+
+        const questionsResult = await client.query(
           `INSERT INTO coding_questions 
            (test_id, title, description, time_limit, memory_limit, question_order, created_at, updated_at) 
-           VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) 
+           VALUES ${questionValues} 
            RETURNING id`,
-          [
-            testId,
-            question.title || 'Untitled',
-            question.description || '',
-            question.timeLimit || 2,
-            question.memoryLimit || 256,
-            savedCount
-          ]
+          questionParams
         );
 
-        const codingQuestionId = questionResult.rows[0].id;
+        const questionIds = questionsResult.rows.map(r => r.id);
+        const allTestCases = [];
 
-        // Insert public test cases
-        if (question.publicTestCases && question.publicTestCases.length > 0) {
-          for (let i = 0; i < question.publicTestCases.length; i++) {
-            const testCase = question.publicTestCases[i];
-            await client.query(
-              `INSERT INTO coding_test_cases 
-               (coding_question_id, input, output, is_hidden, explanation, test_case_order) 
-               VALUES ($1, $2, $3, $4, $5, $6)`,
-              [
-                codingQuestionId,
-                testCase.input || '',
-                testCase.output || '',
-                false,
-                testCase.explanation || '',
-                i
-              ]
-            );
+        // Prepare test cases for batch insert
+        codingQuestions.forEach((question, qIdx) => {
+          const codingQuestionId = questionIds[qIdx];
+          
+          if (question.publicTestCases && question.publicTestCases.length > 0) {
+            question.publicTestCases.forEach((tc, tcIdx) => {
+              allTestCases.push({
+                coding_question_id: codingQuestionId,
+                input: tc.input || '',
+                output: tc.output || '',
+                is_hidden: false,
+                explanation: tc.explanation || '',
+                test_case_order: tcIdx
+              });
+            });
           }
+
+          if (question.hiddenTestCases && question.hiddenTestCases.length > 0) {
+            question.hiddenTestCases.forEach((tc, tcIdx) => {
+              allTestCases.push({
+                coding_question_id: codingQuestionId,
+                input: tc.input || '',
+                output: tc.output || '',
+                is_hidden: true,
+                explanation: '',
+                test_case_order: tcIdx
+              });
+            });
+          }
+        });
+
+        // Step 2: Batch insert all test cases in one query
+        if (allTestCases.length > 0) {
+          const tcValues = allTestCases.map((_, i) => 
+            `($${i*6+1}, $${i*6+2}, $${i*6+3}, $${i*6+4}, $${i*6+5}, $${i*6+6})`
+          ).join(', ');
+          const tcParams = allTestCases.flatMap(tc => [
+            tc.coding_question_id, tc.input, tc.output, tc.is_hidden, tc.explanation, tc.test_case_order
+          ]);
+
+          await client.query(
+            `INSERT INTO coding_test_cases 
+             (coding_question_id, input, output, is_hidden, explanation, test_case_order) 
+             VALUES ${tcValues}`,
+            tcParams
+          );
         }
 
-        // Insert hidden test cases
-        if (question.hiddenTestCases && question.hiddenTestCases.length > 0) {
-          for (let i = 0; i < question.hiddenTestCases.length; i++) {
-            const testCase = question.hiddenTestCases[i];
-            await client.query(
-              `INSERT INTO coding_test_cases 
-               (coding_question_id, input, output, is_hidden, test_case_order) 
-               VALUES ($1, $2, $3, $4, $5)`,
-              [
-                codingQuestionId,
-                testCase.input || '',
-                testCase.output || '',
-                true,
-                i
-              ]
-            );
-          }
-        }
-
-        savedCount++;
+        savedCount = codingQuestions.length;
       }
 
       await client.query('COMMIT');
@@ -142,19 +157,25 @@ class CodingQuestionsController {
         [testId]
       );
 
-      const questions = [];
-
-      for (const question of questionsResult.rows) {
-        // Get test cases for this question
+      const questionIds = questionsResult.rows.map(q => q.id);
+      let allTestCases = [];
+      
+      if (questionIds.length > 0) {
+        // ✅ FIX: Fetch all test cases for ALL questions in a single query (O(1) SQL complexity)
         const testCasesResult = await pool.query(
-          `SELECT input, output, is_hidden, explanation, test_case_order
+          `SELECT coding_question_id, input, output, is_hidden, explanation, test_case_order
            FROM coding_test_cases
-           WHERE coding_question_id = $1
+           WHERE coding_question_id = ANY($1)
            ORDER BY test_case_order, id`,
-          [question.id]
+          [questionIds]
         );
+        allTestCases = testCasesResult.rows;
+      }
 
-        const publicTestCases = testCasesResult.rows
+      const questions = questionsResult.rows.map(question => {
+        const questionTestCases = allTestCases.filter(tc => tc.coding_question_id === question.id);
+        
+        const publicTestCases = questionTestCases
           .filter(tc => !tc.is_hidden)
           .map(tc => ({
             input: tc.input,
@@ -162,14 +183,14 @@ class CodingQuestionsController {
             explanation: tc.explanation || ''
           }));
 
-        const hiddenTestCases = testCasesResult.rows
+        const hiddenTestCases = questionTestCases
           .filter(tc => tc.is_hidden)
           .map(tc => ({
             input: tc.input,
             output: tc.output
           }));
 
-        questions.push({
+        return {
           id: question.id,
           title: question.title,
           description: question.description,
@@ -177,8 +198,8 @@ class CodingQuestionsController {
           memoryLimit: question.memory_limit,
           publicTestCases,
           hiddenTestCases
-        });
-      }
+        };
+      });
 
       res.json({
         success: true,

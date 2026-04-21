@@ -6,6 +6,7 @@ const { pool, cachedQuery, clearCache } = require('../config/db');
 const verifyAdmin = require('../middleware/verifyAdmin');
 const verifyToken = require('../middleware/verifyToken'); // Only for register
 const { verifySession } = require('../middleware/verifySession'); // For all other routes
+const firebaseAdmin = require('../config/firebase'); // Required once at module load (was inside request handlers)
 
 /**
  * GET /api/student/tests
@@ -559,6 +560,7 @@ router.post('/save-progress', verifySession, async (req, res) => {
  */
 router.post('/submit-exam', async (req, res) => {
     const { testId, answers, examId, submissionReason, warningCount, timeRemaining, studentId: clientStudentId, applicationId } = req.body;
+    let studentId;
 
     console.log('=== SUBMIT EXAM REQUEST ===');
     console.log('Test ID:', testId);
@@ -569,7 +571,6 @@ router.post('/submit-exam', async (req, res) => {
     console.log('Time Remaining:', timeRemaining);
 
     try {
-        let studentId;
         let firebaseUid;
 
         // CRITICAL FIX: Check if student has exam progress (already started exam)
@@ -612,8 +613,7 @@ router.post('/submit-exam', async (req, res) => {
             }
 
             try {
-                const admin = require('../config/firebase');
-                const decodedToken = await admin.auth().verifyIdToken(token);
+                const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
                 firebaseUid = decodedToken.uid;
                 
                 // Get student ID from Firebase UID
@@ -841,20 +841,28 @@ router.post('/submit-exam', async (req, res) => {
         const status = percentage >= 50 ? 'Pass' : 'Fail';
 
         // 5. Find or create exam record
+        // FIX: Use INSERT ... ON CONFLICT DO NOTHING so the same exam name (= test title)
+        // is never duplicated. Previously, every submission created a brand-new exam row,
+        // resulting in thousands of duplicate rows.
         let finalExamId = examId;
-        
+
         if (!finalExamId) {
-            // Create a new exam record if not provided
             const testInfo = await pool.query('SELECT title FROM tests WHERE id = $1', [testId]);
             const examName = testInfo.rows[0]?.title || 'Exam';
-            
-            const examResult = await pool.query(`
+
+            // Try to insert; if the name already exists, do nothing and then fetch
+            await pool.query(`
                 INSERT INTO exams (name, date, duration)
                 VALUES ($1, CURRENT_DATE, 60)
-                RETURNING id
+                ON CONFLICT (name) DO NOTHING
             `, [examName]);
-            
-            finalExamId = examResult.rows[0].id;
+
+            // Now fetch the canonical exam id (whether just inserted or pre-existing)
+            const examRow = await pool.query(
+                'SELECT id FROM exams WHERE name = $1',
+                [examName]
+            );
+            finalExamId = examRow.rows[0].id;
         }
 
         // 6. Store result in database
@@ -883,15 +891,38 @@ router.post('/submit-exam', async (req, res) => {
 
         // Update job application test_attempts and auto-update application status
         if (resolvedApplicationId) {
-            await pool.query(`
-                INSERT INTO test_attempts (student_id, test_id, job_application_id, total_marks, obtained_marks, percentage, submitted_at)
-                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-                ON CONFLICT (student_id, test_id, job_application_id) DO UPDATE SET
-                    total_marks = EXCLUDED.total_marks,
-                    obtained_marks = EXCLUDED.obtained_marks,
-                    percentage = EXCLUDED.percentage,
+            const attemptUpdate = await pool.query(`
+                UPDATE test_attempts
+                SET total_marks = $4,
+                    obtained_marks = $5,
+                    percentage = $6,
                     submitted_at = CURRENT_TIMESTAMP
+                WHERE student_id = $1
+                  AND test_id = $2
+                  AND job_application_id = $3
             `, [studentId, testId, resolvedApplicationId, totalMarks, marksObtained, percentage]);
+
+            if (attemptUpdate.rowCount === 0) {
+                await pool.query(`
+                    INSERT INTO test_attempts (
+                        student_id,
+                        test_id,
+                        job_application_id,
+                        total_marks,
+                        obtained_marks,
+                        percentage,
+                        submitted_at
+                    )
+                    SELECT $1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM test_attempts
+                        WHERE student_id = $1
+                          AND test_id = $2
+                          AND job_application_id = $3
+                    )
+                `, [studentId, testId, resolvedApplicationId, totalMarks, marksObtained, percentage]);
+            }
 
             try {
                 const totalTestsResult = await pool.query(`
@@ -1204,11 +1235,9 @@ router.delete('/bulk', verifyAdmin, async (req, res) => {
         let firebaseErrors = 0;
 
         if (firebaseUids.length > 0) {
-            const admin = require('../config/firebase');
-            
             for (const uid of firebaseUids) {
                 try {
-                    await admin.auth().deleteUser(uid);
+                    await firebaseAdmin.auth().deleteUser(uid);
                     firebaseDeleteCount++;
                     console.log(`✅ Deleted Firebase user: ${uid}`);
                 } catch (firebaseError) {
@@ -1272,8 +1301,7 @@ router.delete('/:id', verifyAdmin, async (req, res) => {
         // Then delete from Firebase if firebase_uid exists
         if (firebaseUid) {
             try {
-                const admin = require('../config/firebase');
-                await admin.auth().deleteUser(firebaseUid);
+                await firebaseAdmin.auth().deleteUser(firebaseUid);
                 console.log(`✅ Deleted Firebase user: ${firebaseUid}`);
             } catch (firebaseError) {
                 // Log error but don't fail the request since DB deletion succeeded

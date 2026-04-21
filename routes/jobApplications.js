@@ -106,15 +106,19 @@ router.post('/apply/:jobId', verifySession, async (req, res) => {
         );
 
         if (linkedTests.rows.length > 0) {
-            // Insert test assignments
-            for (const testLink of linkedTests.rows) {
-                await query(
-                    `INSERT INTO test_assignments (test_id, student_id, is_active)
-                     VALUES ($1, $2, true)
-                     ON CONFLICT (test_id, student_id) DO NOTHING`,
-                    [testLink.test_id, studentId]
-                );
-            }
+            // Batch insert all test assignments in one query instead of N individual inserts
+            const testValues = linkedTests.rows.map((_, i) =>
+                `($${i*3+1}, $${i*3+2}, $${i*3+3})`
+            ).join(', ');
+            const testParams = linkedTests.rows.flatMap(testLink => [
+                testLink.test_id, studentId, true
+            ]);
+            await query(
+                `INSERT INTO test_assignments (test_id, student_id, is_active)
+                 VALUES ${testValues}
+                 ON CONFLICT (test_id, student_id) DO NOTHING`,
+                testParams
+            );
 
             // Update application with test assignment timestamp
             await query(
@@ -124,7 +128,7 @@ router.post('/apply/:jobId', verifySession, async (req, res) => {
                 [applicationId]
             );
 
-            // Send test assignment email (non-blocking - enrollment succeeds even if email fails)
+            // Send test assignment email (non-blocking)
             try {
                 await sendTestAssignmentEmail(
                     student.email,
@@ -467,74 +471,52 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
     const { jobId } = req.params;
 
     try {
-        // First auto-correct any completed applications with wrong status
-        // Covers both stuck-in-progress AND wrongly-rejected students
-        const appsToCheck = await query(
-            `SELECT ja.id, ja.student_id, ja.status
-             FROM job_applications ja
-             WHERE ja.job_opening_id = $1
-               AND ja.status IN ('assessment_assigned', 'submitted', 'screening', 'assessment_completed', 'rejected')`,
-            [jobId]
-        );
-
-        const totalTestsRes = await query(
-            `SELECT COUNT(*) AS cnt FROM job_opening_tests WHERE job_opening_id = $1`,
-            [jobId]
-        );
-        const totalJobTests = parseInt(totalTestsRes.rows[0]?.cnt) || 0;
-
-        if (totalJobTests > 0 && appsToCheck.rows.length > 0) {
-            for (const app of appsToCheck.rows) {
-                // Check how many tests this student is actually assigned to for this job
-                const assignedTestsRes = await query(
-                    `SELECT COUNT(DISTINCT jot.test_id) AS cnt
-                     FROM job_opening_tests jot
-                     INNER JOIN test_assignments ta ON ta.test_id = jot.test_id AND ta.student_id = $1 AND ta.is_active = true
-                     WHERE jot.job_opening_id = $2`,
-                    [app.student_id, jobId]
-                );
-                const assignedTests = parseInt(assignedTestsRes.rows[0]?.cnt) || totalJobTests;
-
-                const completedRes = await query(
-                    `SELECT ta.percentage, t.passing_percentage
-                     FROM test_attempts ta
-                     INNER JOIN tests t ON ta.test_id = t.id
-                     WHERE ta.job_application_id = $1 AND ta.student_id = $2`,
-                    [app.id, app.student_id]
-                );
-                if (completedRes.rows.length < assignedTests) continue;
-
-                const allPassed = completedRes.rows.every(r => parseFloat(r.percentage) >= parseFloat(r.passing_percentage));
-                const violRes = await query(
-                    `SELECT COUNT(*) AS cnt FROM proctoring_violations pv
-                     WHERE pv.student_id = $1::varchar
-                       AND pv.test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = $2)`,
-                    [app.student_id, jobId]
-                );
-                const isFlagged = parseInt(violRes.rows[0]?.cnt) > 5;
-                const correctStatus = (allPassed && !isFlagged) ? 'shortlisted' : 'rejected';
-                const avgScore = completedRes.rows.reduce((s, r) => s + parseFloat(r.percentage || 0), 0) / completedRes.rows.length;
-
-                if (app.status !== correctStatus) {
-                    await query(
-                        `UPDATE job_applications
-                         SET status = $1, passed_assessment = $2, assessment_score = $3,
-                             test_completed_at = COALESCE(test_completed_at, CURRENT_TIMESTAMP),
-                             updated_at = CURRENT_TIMESTAMP
-                         WHERE id = $4`,
-                        [correctStatus, (allPassed && !isFlagged), avgScore, app.id]
-                    );
-                }
-            }
-        }
-
-        // Now fetch fresh stats
+        // Single aggregated query replaces the N+1 loop that did 3 queries per applicant
         const stats = await query(
-            `SELECT 
+            `WITH app_test_status AS (
+                SELECT
+                    ja.id AS app_id,
+                    ja.status,
+                    ja.passed_assessment,
+                    ja.assessment_score,
+                    COUNT(DISTINCT jot.test_id) AS total_job_tests,
+                    COUNT(DISTINCT ta.test_id) FILTER (WHERE ta.submitted_at IS NOT NULL) AS completed_tests,
+                    BOOL_AND(ta.percentage >= t.passing_percentage) FILTER (WHERE ta.submitted_at IS NOT NULL) AS all_passed,
+                    COALESCE((
+                        SELECT COUNT(*) FROM proctoring_violations pv
+                        WHERE pv.student_id = s.firebase_uid
+                          AND pv.test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = $1)
+                    ), 0) AS total_violations
+                FROM job_applications ja
+                INNER JOIN students s ON ja.student_id = s.id
+                LEFT JOIN job_opening_tests jot ON jot.job_opening_id = ja.job_opening_id
+                LEFT JOIN test_attempts ta ON ta.test_id = jot.test_id AND ta.student_id = ja.student_id AND ta.job_application_id = ja.id AND ta.submitted_at IS NOT NULL
+                LEFT JOIN tests t ON t.id = jot.test_id
+                WHERE ja.job_opening_id = $1
+                GROUP BY ja.id, ja.status, ja.passed_assessment, ja.assessment_score, s.firebase_uid
+            ),
+            auto_corrections AS (
+                SELECT
+                    app_id,
+                    CASE
+                        WHEN completed_tests >= total_job_tests AND total_job_tests > 0
+                             AND (all_passed AND total_violations <= 5) THEN 'shortlisted'
+                        WHEN completed_tests >= total_job_tests AND total_job_tests > 0
+                             AND NOT (all_passed AND total_violations <= 5) THEN 'rejected'
+                        ELSE status
+                    END AS corrected_status,
+                    CASE
+                        WHEN completed_tests >= total_job_tests AND total_job_tests > 0
+                        THEN (all_passed AND total_violations <= 5)
+                        ELSE passed_assessment
+                    END AS corrected_passed
+                FROM app_test_status
+            )
+            SELECT
                 COUNT(*) AS total_applications,
-                COUNT(*) FILTER (WHERE status IN ('submitted', 'screening', 'assessment_assigned', 'assessment_completed')) AS in_progress,
-                COUNT(*) FILTER (WHERE status = 'shortlisted') AS shortlisted,
-                COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
+                COUNT(*) FILTER (WHERE ac.corrected_status IN ('submitted','screening','assessment_assigned','assessment_completed')) AS in_progress,
+                COUNT(*) FILTER (WHERE ac.corrected_status = 'shortlisted') AS shortlisted,
+                COUNT(*) FILTER (WHERE ac.corrected_status = 'rejected') AS rejected,
                 (
                     SELECT COUNT(*)
                     FROM (
@@ -546,10 +528,10 @@ router.get('/admin/stats/:jobId', verifyAdmin, async (req, res) => {
                           AND ta.submitted_at IS NOT NULL
                     ) sub
                 ) AS attempted_count,
-                COUNT(*) FILTER (WHERE passed_assessment = true) AS passed_count,
-                AVG(assessment_score) FILTER (WHERE assessment_score IS NOT NULL) AS avg_assessment_score
-             FROM job_applications
-             WHERE job_opening_id = $1`,
+                COUNT(*) FILTER (WHERE ac.corrected_passed = true) AS passed_count,
+                AVG(ats.assessment_score) FILTER (WHERE ats.assessment_score IS NOT NULL) AS avg_assessment_score
+            FROM app_test_status ats
+            JOIN auto_corrections ac ON ac.app_id = ats.app_id`,
             [jobId]
         );
 
@@ -595,30 +577,15 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
                     WHEN ta.percentage IS NOT NULL AND ta.percentage >= t.passing_percentage THEN true
                     ELSE false
                 END AS passed,
-                -- Violations scoped to THIS test only (for display columns)
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
-                     AND pv.violation_type = 'no_face'), 0) AS no_face_count,
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
-                     AND pv.violation_type = 'multi_face'), 0) AS multi_face_count,
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
-                     AND pv.violation_type = 'phone_detected'), 0) AS phone_count,
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
-                     AND pv.violation_type = 'noise_detected'), 0) AS noise_count,
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id
-                     AND pv.violation_type = 'voice_detected'), 0) AS voice_count,
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar AND pv.test_id = t.id), 0) AS violation_count,
-                -- Total violations across ALL of this job's tests (for shortlist decision)
-                COALESCE((SELECT COUNT(*) FROM proctoring_violations pv 
-                     WHERE pv.student_id = s.id::varchar
-                       AND pv.test_id IN (
-                           SELECT test_id FROM job_opening_tests WHERE job_opening_id = $1
-                       )), 0) AS total_job_violations
+                -- Violations per test using firebase_uid (correct join — not s.id::varchar)
+                COALESCE(pv_agg.no_face_count, 0)      AS no_face_count,
+                COALESCE(pv_agg.multi_face_count, 0)   AS multi_face_count,
+                COALESCE(pv_agg.phone_count, 0)        AS phone_count,
+                COALESCE(pv_agg.noise_count, 0)        AS noise_count,
+                COALESCE(pv_agg.voice_count, 0)        AS voice_count,
+                COALESCE(pv_agg.violation_count, 0)    AS violation_count,
+                -- Total violations across ALL of this job's tests
+                COALESCE(pv_job.total_job_violations, 0) AS total_job_violations
              FROM job_applications ja
              INNER JOIN students s ON ja.student_id = s.id
              LEFT JOIN job_opening_tests jot ON ja.job_opening_id = jot.job_opening_id
@@ -632,6 +599,25 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
                 ORDER BY submitted_at DESC
                 LIMIT 1
              ) ta ON true
+             -- Aggregate violations per student per test in one join
+             LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) FILTER (WHERE violation_type = 'no_face')       AS no_face_count,
+                    COUNT(*) FILTER (WHERE violation_type = 'multi_face')    AS multi_face_count,
+                    COUNT(*) FILTER (WHERE violation_type = 'phone_detected') AS phone_count,
+                    COUNT(*) FILTER (WHERE violation_type = 'noise_detected') AS noise_count,
+                    COUNT(*) FILTER (WHERE violation_type = 'voice_detected') AS voice_count,
+                    COUNT(*)                                                  AS violation_count
+                FROM proctoring_violations
+                WHERE student_id = s.firebase_uid AND test_id = t.id
+             ) pv_agg ON true
+             -- Total violations across all job tests per student
+             LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS total_job_violations
+                FROM proctoring_violations
+                WHERE student_id = s.firebase_uid
+                  AND test_id IN (SELECT test_id FROM job_opening_tests WHERE job_opening_id = $1)
+             ) pv_job ON true
              WHERE ja.job_opening_id = $1
              ORDER BY s.full_name ASC, t.title ASC`,
             [jobId]
@@ -670,17 +656,22 @@ router.get('/admin/job/:jobId/test-results', verifyAdmin, async (req, res) => {
 
         const statusUpdates = [];
 
+        // Fetch assigned test count per applicant in one batch query instead of N queries
+        const assignedCountsRes = await query(
+            `SELECT jot.job_opening_id, ta.student_id, COUNT(DISTINCT jot.test_id) AS cnt
+             FROM job_opening_tests jot
+             INNER JOIN test_assignments ta ON ta.test_id = jot.test_id AND ta.is_active = true
+             WHERE jot.job_opening_id = $1
+             GROUP BY jot.job_opening_id, ta.student_id`,
+            [jobId]
+        );
+        const assignedCountMap = new Map(
+            assignedCountsRes.rows.map(r => [r.student_id, parseInt(r.cnt)])
+        );
+
         if (totalJobTests > 0) {
             for (const [appId, app] of appMap.entries()) {
-                // All tests linked to this job that this student is actually assigned to
-                const assignedTestsRes = await query(
-                    `SELECT COUNT(DISTINCT jot.test_id) AS cnt
-                     FROM job_opening_tests jot
-                     INNER JOIN test_assignments ta ON ta.test_id = jot.test_id AND ta.student_id = $1 AND ta.is_active = true
-                     WHERE jot.job_opening_id = $2`,
-                    [app.student_id, jobId]
-                );
-                const assignedTests = parseInt(assignedTestsRes.rows[0]?.cnt) || totalJobTests;
+                const assignedTests = assignedCountMap.get(app.student_id) ?? totalJobTests;
 
                 // Student must complete all tests they are assigned to
                 const completedTests = app.tests.filter(t => t.submitted_at !== null);

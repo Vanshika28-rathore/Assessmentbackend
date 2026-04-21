@@ -4,6 +4,7 @@ const verifyAdmin = require('../middleware/verifyAdmin.js');
 const verifyToken = require('../middleware/verifyToken.js'); // Only for register
 const { verifySession } = require('../middleware/verifySession.js'); // For student routes
 const pool = require('../config/db.js');
+const codeExecutionController = require('../controllers/codeExecution.controller');
 
 const router = express.Router();
 
@@ -16,7 +17,8 @@ router.get('/test/:testId', verifyAdmin, (req, res) => codingQuestionsController
 // Submit coding solution - runs against all test cases and saves result (Student)
 router.post('/submit', verifySession, async (req, res) => {
     try {
-        const { studentId, codingQuestionId, testId, code, language } = req.body;
+        const { codingQuestionId, testId, code, language } = req.body;
+        const studentId = req.studentId; // Use verified ID from session
 
         if (!studentId || !codingQuestionId || !testId || !code || !language) {
             return res.status(400).json({
@@ -60,9 +62,6 @@ router.post('/submit', verifySession, async (req, res) => {
         // Separate public and hidden test cases
         const publicTestCases = allTestCases.filter(tc => !tc.is_hidden);
         const hiddenTestCases = allTestCases.filter(tc => tc.is_hidden);
-
-        // Import code execution controller
-        const codeExecutionController = require('../controllers/codeExecution.controller');
 
         // Run code against all test cases
         const mockReq = {

@@ -16,7 +16,7 @@ router.get('/violations/test/:testId', verifyAdmin, async (req, res) => {
                 s.email as student_email,
                 t.title as test_title
             FROM proctoring_violations pv
-            LEFT JOIN students s ON pv.student_id = s.id::text
+            LEFT JOIN students s ON pv.student_id = s.firebase_uid
             LEFT JOIN tests t ON pv.test_id = t.id
             WHERE pv.test_id = $1
             ORDER BY pv.timestamp DESC`,
@@ -112,7 +112,7 @@ router.get('/violations/flagged/:testId', verifyAdmin, async (req, res) => {
                 COUNT(CASE WHEN pv.severity = 'medium' AND pv.violation_type != 'microphone_silent' THEN 1 END) as medium_severity_count,
                 MAX(pv.timestamp) as last_violation
             FROM proctoring_violations pv
-            LEFT JOIN students s ON pv.student_id = s.id::text
+            LEFT JOIN students s ON pv.student_id = s.firebase_uid
             WHERE pv.test_id = $1
             GROUP BY pv.student_id, s.full_name, s.email, s.phone
             HAVING COUNT(CASE WHEN pv.severity = 'high' AND pv.violation_type != 'microphone_silent' THEN 1 END) >= 3
@@ -154,7 +154,7 @@ router.get('/violations/by-student/:testId', verifyAdmin, async (req, res) => {
                 COUNT(CASE WHEN pv.violation_type != 'microphone_silent' THEN 1 END) as total_violations,
                 MAX(pv.timestamp) as last_violation
             FROM proctoring_violations pv
-            LEFT JOIN students s ON pv.student_id = s.id::text
+            LEFT JOIN students s ON pv.student_id = s.firebase_uid
             WHERE pv.test_id = $1
             GROUP BY pv.student_id, s.full_name, s.email, s.phone
             ORDER BY total_violations DESC`,

@@ -14,6 +14,9 @@ const { pool } = require('./config/db');
 require('./config/firebase'); // Initialize Firebase Admin SDK
 const { logger, expressLogger } = require('./config/logger');
 
+// Import cleanup job
+const cleanupOldMessages = require('./jobs/cleanupOldMessages');
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const adminAuthRoutes = require('./routes/adminAuth');
@@ -45,6 +48,8 @@ const server = http.createServer(app);
 const allowedSocketOrigins = [
     process.env.FRONTEND_URL,
     process.env.CLIENT_URL,
+    'http://localhost:4173',
+    'http://localhost:4174',
     'http://localhost:5173',
     'http://localhost:5174',
     'https://assessment-shnoor-com.onrender.com',
@@ -102,6 +107,8 @@ app.use(helmet({
 const allowedOrigins = [
     process.env.FRONTEND_URL,
    process.env.CLIENT_URL,
+    'http://localhost:4173',
+    'http://localhost:4174',
     'http://localhost:5173',
     'http://localhost:5174',
     'https://assessment-shnoor-com.onrender.com',
@@ -430,6 +437,41 @@ let rotationInterval = setInterval(() => {
     }
 }, PROCTORING_CONFIG.ROTATION_INTERVAL * 60 * 1000);
 
+// Cleanup old messages daily at 2 AM
+const scheduleCleanup = () => {
+    const now = new Date();
+    const next2AM = new Date(now);
+    next2AM.setHours(2, 0, 0, 0);
+    
+    // If it's past 2 AM today, schedule for tomorrow
+    if (now > next2AM) {
+        next2AM.setDate(next2AM.getDate() + 1);
+    }
+    
+    const timeUntilCleanup = next2AM - now;
+    
+    logger.info({
+        nextCleanup: next2AM.toISOString(),
+        hoursUntil: (timeUntilCleanup / (1000 * 60 * 60)).toFixed(2)
+    }, 'Scheduled daily message cleanup');
+    
+    setTimeout(() => {
+        cleanupOldMessages()
+            .then(result => {
+                logger.info(result, 'Daily cleanup completed');
+            })
+            .catch(error => {
+                logger.error({ err: error }, 'Daily cleanup failed');
+            });
+        
+        // Schedule next cleanup (24 hours later)
+        scheduleCleanup();
+    }, timeUntilCleanup);
+};
+
+// Start cleanup scheduler
+scheduleCleanup();
+
 io.on('connection', (socket) => {
     logger.info({
         socketId: socket.id,
@@ -623,6 +665,25 @@ io.on('connection', (socket) => {
                 aiViolations // Include AI violation counts
             });
         }
+    });
+
+    // Audio chunk relay for live proctoring (admin decides per-student playback)
+    socket.on('proctoring:audio', (data) => {
+        const { studentId, studentName, testId, testTitle, audioDataUrl, timestamp } = data;
+
+        if (!studentId || !audioDataUrl) {
+            return;
+        }
+
+        // Relay to admins; playback remains disabled by default on admin UI until manually enabled per student.
+        io.to('admin-room').emit('proctoring:audio', {
+            studentId,
+            studentName,
+            testId,
+            testTitle,
+            audioDataUrl,
+            timestamp,
+        });
     });
 
     // AI Violation detected - Store and alert admins

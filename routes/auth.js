@@ -360,9 +360,9 @@ router.post('/register', verifyToken, async (req, res) => {
         // These should be run once during deployment/migration, not per registration
         // This alone saves 5-15 seconds per registration
 
-        // Check if user already exists
+        // Check if user already exists — select only needed columns, not SELECT *
         const existingUser = await client.query(
-            'SELECT * FROM students WHERE firebase_uid = $1 OR email = $2 OR roll_number = $3',
+            'SELECT id, firebase_uid, email, roll_number FROM students WHERE firebase_uid = $1 OR email = $2 OR roll_number = $3',
             [firebase_uid, email, roll_number]
         );
 
@@ -488,30 +488,21 @@ router.post('/register', verifyToken, async (req, res) => {
 
         const newUser = result.rows[0];
 
-        // REMOVED: CREATE TABLE IF NOT EXISTS for test_assignments and institute_test_assignments
-        // These should be in migration, not per registration
-        
-        // Check if the institute exists in the institutes table
-        const instituteRecord = await client.query(
-            'SELECT id FROM institutes WHERE name = $1 AND is_active = true',
-            [normalizedInstitute]
-        );
-
+        // Use the institute record already fetched above — avoids a second identical query
         let testsToAssign = [];
 
-        // Method 1: Check for institute-level test assignments (new approach)
-        if (instituteRecord.rows.length > 0) {
-            const instituteId = instituteRecord.rows[0].id;
+        if (instituteCheck.rows.length > 0) {
+            // Method 1: Institute-level test assignments (preferred)
             const instituteTests = await client.query(
-                `SELECT test_id
-                 FROM institute_test_assignments
-                 WHERE institute_id = $1 AND is_active = true`,
-                [instituteId]
+                `SELECT test_id FROM institute_test_assignments WHERE institute_id = (
+                    SELECT id FROM institutes WHERE name = $1 AND is_active = true LIMIT 1
+                 ) AND is_active = true`,
+                [normalizedInstitute]
             );
             testsToAssign = instituteTests.rows.map(row => row.test_id);
         }
 
-        // Method 2: Fallback - check if any student from the same institute has assignments (old approach)
+        // Method 2: Fallback - check peer students from same institute
         if (testsToAssign.length === 0) {
             const instituteTests = await client.query(
                 `SELECT DISTINCT ta.test_id
@@ -523,32 +514,36 @@ router.post('/register', verifyToken, async (req, res) => {
             testsToAssign = instituteTests.rows.map(row => row.test_id);
         }
 
-        // Auto-assign those tests to the new student
+        // Auto-assign institute tests in one batch instead of a loop
         if (testsToAssign.length > 0) {
-            for (const testId of testsToAssign) {
-                await client.query(
-                    `INSERT INTO test_assignments (test_id, student_id, is_active)
-                     VALUES ($1, $2, true)
-                     ON CONFLICT (test_id, student_id) DO NOTHING`,
-                    [testId, newUser.id]
-                );
-            }
+            const testValues = testsToAssign.map((_, i) =>
+                `($${i*3+1}, $${i*3+2}, $${i*3+3})`
+            ).join(', ');
+            const testParams = testsToAssign.flatMap(testId => [testId, newUser.id, true]);
+            await client.query(
+                `INSERT INTO test_assignments (test_id, student_id, is_active)
+                 VALUES ${testValues}
+                 ON CONFLICT (test_id, student_id) DO NOTHING`,
+                testParams
+            );
         }
 
-        // Auto-assign ALL mock tests to every new student (regardless of institute)
+        // Auto-assign ALL mock tests in one batch instead of a loop
         try {
             const mockTestsResult = await client.query(
                 'SELECT id FROM tests WHERE is_mock_test = true'
             );
-            for (const mockTest of mockTestsResult.rows) {
+            if (mockTestsResult.rows.length > 0) {
+                const mockValues = mockTestsResult.rows.map((_, i) =>
+                    `($${i*3+1}, $${i*3+2}, $${i*3+3})`
+                ).join(', ');
+                const mockParams = mockTestsResult.rows.flatMap(t => [t.id, newUser.id, true]);
                 await client.query(
                     `INSERT INTO test_assignments (test_id, student_id, is_active)
-                     VALUES ($1, $2, true)
+                     VALUES ${mockValues}
                      ON CONFLICT (test_id, student_id) DO NOTHING`,
-                    [mockTest.id, newUser.id]
+                    mockParams
                 );
-            }
-            if (mockTestsResult.rows.length > 0) {
                 console.log(`${mockTestsResult.rows.length} mock test(s) auto-assigned to new student: ${full_name}`);
             }
         } catch (mockErr) {

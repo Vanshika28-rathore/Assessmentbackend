@@ -87,6 +87,7 @@ router.post('/', upload.single('image'), async (req, res) => {
         // Emit socket notification to admins
         const io = req.app.get('io');
         if (io) {
+            // Notify admins
             io.to('admin-support-room').emit('support:new-student-message', {
                 id: result.rows[0].id,
                 studentName: name?.trim() || 'Anonymous',
@@ -95,8 +96,21 @@ router.post('/', upload.single('image'), async (req, res) => {
                 messagePreview: message.trim().substring(0, 100) + (message.length > 100 ? '...' : ''),
                 topic: topic || 'General',
                 createdAt: result.rows[0].created_at,
+                imagePath: result.rows[0].image_path,
                 hasImage: !!imagePath
             });
+            
+            // Echo back to student for real-time display
+            if (studentId) {
+                const roomName = `support-student-${studentId}`;
+                io.to(roomName).emit('support:student-message-echo', {
+                    id: result.rows[0].id,
+                    studentId: studentId,
+                    messagePreview: message.trim(),
+                    createdAt: result.rows[0].created_at,
+                    imagePath: result.rows[0].image_path
+                });
+            }
         }
 
         res.json({
@@ -126,19 +140,27 @@ router.get('/', verifyAdmin, async (req, res) => {
         const { status, topic, college, page = 1, limit = 20 } = req.query;
         const offset = (page - 1) * limit;
 
-        // Get conversations (grouped by student_id) with latest message info
+        // Get conversations grouped by student_id with latest message info.
+        // Pre-aggregate counts in a CTE instead of correlated subqueries (was O(n^2) per conversation)
         let query = `
-            WITH latest_messages AS (
-                SELECT DISTINCT ON (COALESCE(student_id, 'anonymous_' || id::text)) 
-                    COALESCE(student_id, 'anonymous_' || id::text) as conversation_id,
-                    id, name, email, message, topic, image_path, status, created_at, read_at, 
-                    student_id, college, sender_type,
-                    (SELECT COUNT(*) FROM student_messages sm2 
-                     WHERE COALESCE(sm2.student_id, 'anonymous_' || sm2.id::text) = COALESCE(student_messages.student_id, 'anonymous_' || student_messages.id::text)) as message_count,
-                    (SELECT COUNT(*) FROM student_messages sm3 
-                     WHERE COALESCE(sm3.student_id, 'anonymous_' || sm3.id::text) = COALESCE(student_messages.student_id, 'anonymous_' || student_messages.id::text) 
-                     AND sm3.status = 'unread' AND sm3.sender_type = 'student') as unread_count
+            WITH msg_stats AS (
+                SELECT
+                    COALESCE(student_id, 'anonymous_' || id::text) AS conv_id,
+                    COUNT(*) AS message_count,
+                    COUNT(*) FILTER (WHERE status = 'unread' AND sender_type = 'student') AS unread_count
                 FROM student_messages
+                WHERE sender_type = 'student'
+                GROUP BY COALESCE(student_id, 'anonymous_' || id::text)
+            ),
+            latest_messages AS (
+                SELECT DISTINCT ON (COALESCE(student_id, 'anonymous_' || id::text))
+                    COALESCE(student_id, 'anonymous_' || id::text) as conversation_id,
+                    id, name, email, message, topic, image_path, status, created_at, read_at,
+                    student_id, college, sender_type,
+                    ms.message_count,
+                    ms.unread_count
+                FROM student_messages
+                JOIN msg_stats ms ON ms.conv_id = COALESCE(student_id, 'anonymous_' || id::text)
                 WHERE sender_type = 'student'
                 ORDER BY COALESCE(student_id, 'anonymous_' || id::text), created_at DESC
             )
@@ -612,6 +634,372 @@ router.post('/mark-all-read', verifyAdmin, async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to mark messages as read'
+        });
+    }
+});
+
+/**
+ * POST /api/student-messages/conversation/:studentId/close
+ * Close conversation and request feedback from student (Admin only)
+ */
+router.post('/conversation/:studentId/close', verifyAdmin, async (req, res) => {
+    try {
+        const { studentId } = req.params;
+        const adminData = req.adminData || {};
+        const adminId = adminData.id || adminData.email || 'admin';
+
+        logger.info({
+            event: 'close_conversation_attempt',
+            studentId,
+            adminId
+        });
+
+        // First check if conversation exists
+        const checkResult = await pool.query(
+            `SELECT COUNT(*) as count FROM student_messages WHERE student_id = $1`,
+            [studentId]
+        );
+
+        if (parseInt(checkResult.rows[0].count) === 0) {
+            logger.warn({
+                event: 'conversation_not_found',
+                studentId
+            });
+            return res.status(404).json({
+                success: false,
+                message: 'No conversation found for this student'
+            });
+        }
+
+        // Update all messages in this conversation to closed status
+        const result = await pool.query(
+            `UPDATE student_messages 
+             SET conversation_status = 'closed', 
+                 closed_at = NOW(), 
+                 closed_by = $1
+             WHERE student_id = $2 AND (conversation_status = 'open' OR conversation_status IS NULL)
+             RETURNING id`,
+            [adminId, studentId]
+        );
+
+        if (result.rowCount === 0) {
+            logger.warn({
+                event: 'conversation_already_closed',
+                studentId
+            });
+            return res.status(400).json({
+                success: false,
+                message: 'Conversation is already closed'
+            });
+        }
+
+        // Emit socket notification to student requesting feedback
+        const io = req.app.get('io');
+        if (io) {
+            const roomName = `support-student-${studentId}`;
+            logger.info({
+                event: 'emitting_conversation_closed',
+                roomName,
+                studentId,
+                socketsInRoom: io.sockets.adapter.rooms.get(roomName)?.size || 0
+            });
+            
+            const emitData = {
+                studentId,
+                closedAt: new Date(),
+                closedBy: adminId,
+                requestFeedback: true
+            };
+            
+            logger.info({
+                event: 'conversation_closed_emit_data',
+                data: emitData
+            });
+            
+            io.to(roomName).emit('support:conversation-closed', emitData);
+            
+            // Also log all active support rooms for debugging
+            const allRooms = Array.from(io.sockets.adapter.rooms.keys())
+                .filter(r => r.startsWith('support-student'));
+            logger.info({
+                event: 'active_support_rooms',
+                rooms: allRooms
+            });
+        } else {
+            logger.warn({
+                event: 'socket_io_not_available',
+                studentId
+            });
+        }
+
+        logger.info({
+            event: 'conversation_closed',
+            studentId,
+            adminId,
+            messagesUpdated: result.rowCount
+        });
+
+        res.json({
+            success: true,
+            message: 'Conversation closed successfully',
+            updatedCount: result.rowCount
+        });
+    } catch (error) {
+        logger.error({ err: error, event: 'close_conversation_error' });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to close conversation'
+        });
+    }
+});
+
+/**
+ * POST /api/student-messages/conversation/:studentId/feedback
+ * Submit feedback for a closed conversation (Student only)
+ */
+router.post('/conversation/:studentId/feedback', verifySession, async (req, res) => {
+    try {
+        const { studentId } = req.params;
+        const { rating, helpful, responseTime, comments } = req.body;
+
+        // Validate rating
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({
+                success: false,
+                message: 'Rating must be between 1 and 5'
+            });
+        }
+
+        // Get student ID from Firebase auth
+        const firebaseUid = req.firebaseUid;
+        const studentResult = await pool.query(
+            'SELECT roll_number FROM students WHERE firebase_uid = $1',
+            [firebaseUid]
+        );
+
+        if (studentResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Student not found'
+            });
+        }
+
+        const verifiedStudentId = studentResult.rows[0].roll_number;
+
+        // Verify student ID matches
+        if (verifiedStudentId !== studentId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Unauthorized to submit feedback for this conversation'
+            });
+        }
+
+        // Update feedback for all messages in this conversation
+        const result = await pool.query(
+            `UPDATE student_messages 
+             SET feedback_rating = $1,
+                 feedback_helpful = $2,
+                 feedback_response_time = $3,
+                 feedback_comments = $4,
+                 feedback_submitted_at = NOW()
+             WHERE student_id = $5 AND conversation_status = 'closed'
+             RETURNING id`,
+            [rating, helpful, responseTime, comments, studentId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Conversation not found or not closed'
+            });
+        }
+
+        logger.info({
+            event: 'feedback_submitted',
+            studentId,
+            rating,
+            helpful,
+            responseTime
+        });
+
+        res.json({
+            success: true,
+            message: 'Feedback submitted successfully',
+            updatedCount: result.rowCount
+        });
+    } catch (error) {
+        logger.error({ err: error, event: 'submit_feedback_error' });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to submit feedback'
+        });
+    }
+});
+
+/**
+ * GET /api/student-messages/analytics/feedback
+ * Get feedback analytics (Admin only)
+ */
+router.get('/analytics/feedback', verifyAdmin, async (req, res) => {
+    try {
+        // Get overall statistics
+        const statsResult = await pool.query(`
+            SELECT 
+                COUNT(DISTINCT student_id) FILTER (WHERE conversation_status = 'closed') as total_closed_conversations,
+                COUNT(DISTINCT student_id) FILTER (WHERE feedback_rating IS NOT NULL) as conversations_with_feedback,
+                ROUND(AVG(feedback_rating), 2) as average_rating,
+                COUNT(*) FILTER (WHERE feedback_helpful = true) as helpful_count,
+                COUNT(*) FILTER (WHERE feedback_helpful = false) as not_helpful_count,
+                COUNT(*) FILTER (WHERE feedback_rating = 5) as five_star_count,
+                COUNT(*) FILTER (WHERE feedback_rating = 4) as four_star_count,
+                COUNT(*) FILTER (WHERE feedback_rating = 3) as three_star_count,
+                COUNT(*) FILTER (WHERE feedback_rating = 2) as two_star_count,
+                COUNT(*) FILTER (WHERE feedback_rating = 1) as one_star_count
+            FROM student_messages
+            WHERE sender_type = 'student'
+        `);
+
+        // Get response time distribution
+        const responseTimeResult = await pool.query(`
+            SELECT 
+                feedback_response_time,
+                COUNT(*) as count
+            FROM student_messages
+            WHERE feedback_response_time IS NOT NULL
+            GROUP BY feedback_response_time
+            ORDER BY 
+                CASE feedback_response_time
+                    WHEN 'very_fast' THEN 1
+                    WHEN 'fast' THEN 2
+                    WHEN 'average' THEN 3
+                    WHEN 'slow' THEN 4
+                    WHEN 'very_slow' THEN 5
+                END
+        `);
+
+        // Get recent feedback with comments
+        const recentFeedbackResult = await pool.query(`
+            SELECT DISTINCT ON (student_id)
+                student_id,
+                name,
+                college,
+                feedback_rating,
+                feedback_helpful,
+                feedback_response_time,
+                feedback_comments,
+                feedback_submitted_at,
+                closed_at
+            FROM student_messages
+            WHERE feedback_rating IS NOT NULL
+            ORDER BY student_id, feedback_submitted_at DESC
+            LIMIT 20
+        `);
+
+        // Calculate feedback response rate
+        const stats = statsResult.rows[0];
+        const feedbackResponseRate = stats.total_closed_conversations > 0
+            ? ((stats.conversations_with_feedback / stats.total_closed_conversations) * 100).toFixed(1)
+            : 0;
+
+        res.json({
+            success: true,
+            analytics: {
+                overview: {
+                    totalClosedConversations: parseInt(stats.total_closed_conversations) || 0,
+                    conversationsWithFeedback: parseInt(stats.conversations_with_feedback) || 0,
+                    feedbackResponseRate: parseFloat(feedbackResponseRate),
+                    averageRating: parseFloat(stats.average_rating) || 0,
+                    helpfulCount: parseInt(stats.helpful_count) || 0,
+                    notHelpfulCount: parseInt(stats.not_helpful_count) || 0
+                },
+                ratingDistribution: {
+                    fiveStar: parseInt(stats.five_star_count) || 0,
+                    fourStar: parseInt(stats.four_star_count) || 0,
+                    threeStar: parseInt(stats.three_star_count) || 0,
+                    twoStar: parseInt(stats.two_star_count) || 0,
+                    oneStar: parseInt(stats.one_star_count) || 0
+                },
+                responseTimeDistribution: responseTimeResult.rows,
+                recentFeedback: recentFeedbackResult.rows
+            }
+        });
+    } catch (error) {
+        logger.error({ err: error, event: 'fetch_analytics_error' });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch analytics'
+        });
+    }
+});
+
+/**
+ * POST /api/student-messages/bulk-delete
+ * Delete multiple conversations (Admin only)
+ */
+router.post('/bulk-delete', verifyAdmin, async (req, res) => {
+    try {
+        const { studentIds } = req.body;
+
+        if (!Array.isArray(studentIds) || studentIds.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Student IDs array is required'
+            });
+        }
+
+        // Get all image paths before deleting
+        const imagesResult = await pool.query(
+            `SELECT id, image_path
+             FROM student_messages
+             WHERE student_id = ANY($1) AND image_path IS NOT NULL`,
+            [studentIds]
+        );
+
+        // Delete from database
+        const deleteResult = await pool.query(
+            'DELETE FROM student_messages WHERE student_id = ANY($1) RETURNING id',
+            [studentIds]
+        );
+
+        // Delete associated images
+        let deletedImagesCount = 0;
+        for (const row of imagesResult.rows) {
+            if (!row.image_path) continue;
+
+            const fullPath = path.join(__dirname, '..', row.image_path);
+            if (fs.existsSync(fullPath)) {
+                try {
+                    fs.unlinkSync(fullPath);
+                    deletedImagesCount++;
+                } catch (fileErr) {
+                    logger.warn({
+                        err: fileErr,
+                        event: 'bulk_delete_image_failed',
+                        messageId: row.id,
+                        imagePath: row.image_path
+                    });
+                }
+            }
+        }
+
+        logger.info({
+            event: 'bulk_conversations_deleted',
+            studentIds,
+            deletedMessages: deleteResult.rowCount,
+            deletedImages: deletedImagesCount
+        });
+
+        res.json({
+            success: true,
+            message: `${studentIds.length} conversations deleted successfully`,
+            deletedMessages: deleteResult.rowCount,
+            deletedImages: deletedImagesCount
+        });
+    } catch (error) {
+        logger.error({ err: error, event: 'bulk_delete_error' });
+        res.status(500).json({
+            success: false,
+            message: 'Failed to delete conversations'
         });
     }
 });

@@ -127,18 +127,3 @@ certs/
 # ============================================
 test-integration.js
 verify-setup.js
-ONBOARDING_VIDEO_FEATURE.md
-db-audit-after-fix.txt
-db-audit-clean.txt
-db-audit-plain.js
-db-audit-results.txt
-db-audit.js
-db-current-state.txt
-db-fix-results.txt
-mark-existing-students-as-seen.js
-master-fix-results.txt
-master-fix-results2.txt
-run-onboarding-migration.js
-test-onboarding-column.js
-test-onboarding-setup.js
-update-mock-test-details.js

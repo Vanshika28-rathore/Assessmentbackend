@@ -11,5 +11,19 @@ CREATE INDEX IF NOT EXISTS idx_test_attempts_job_application ON test_attempts(jo
 ALTER TABLE test_attempts DROP CONSTRAINT IF EXISTS test_attempts_student_id_test_id_key;
 
 -- Add new UNIQUE constraint that includes job_application_id
-ALTER TABLE test_attempts ADD CONSTRAINT test_attempts_student_test_application_unique 
-    UNIQUE (student_id, test_id, job_application_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'test_attempts_student_test_application_unique'
+    ) THEN
+        BEGIN
+            ALTER TABLE test_attempts ADD CONSTRAINT test_attempts_student_test_application_unique
+                UNIQUE (student_id, test_id, job_application_id);
+        EXCEPTION
+            WHEN duplicate_object THEN
+                NULL;
+        END;
+    END IF;
+END $$;
