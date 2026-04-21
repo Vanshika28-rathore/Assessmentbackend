@@ -32,6 +32,7 @@ const studentMessagesRoutes = require('./routes/studentMessages');
 const codeExecutionRoutes = require('./routes/codeExecution.routes');
 const codingQuestionsRoutes = require('./routes/codingQuestions.routes');
 const interviewsRoutes = require('./routes/interviews.routes');
+const aiInterviewRoutes = require('./routes/aiInterview.routes');
 
 // Import middleware
 const { authLimiter, apiLimiter, submissionLimiter, proctoringLimiter, adminLimiter } = require('./middleware/rateLimiter');
@@ -157,6 +158,7 @@ app.use('/api/student-messages', studentMessagesRoutes);
 app.use('/api/code', codeExecutionRoutes);
 app.use('/api/coding-questions', codingQuestionsRoutes);
 app.use('/api/interviews', interviewsRoutes);
+app.use('/api/ai-interview', aiInterviewRoutes);
 
 app.get('/', (req, res) => {
     res.json({
