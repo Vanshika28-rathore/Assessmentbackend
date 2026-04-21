@@ -30,10 +30,13 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 10m
+          port: 22
+          timeout: 60s
+          script_stop: true
+          debug: true
           script: |
             cd /home/ubuntu/Assessment-backend
             git pull origin main
-            npm install --production
+            npm ci --production
             pm2 restart backend
             pm2 save
