@@ -27,8 +27,8 @@ jobs:
           timeout: 30s
           command_timeout: 10m
           script: |
-            cd /home/ubuntu/Assessment-backend
-            git pull origin main
-            npm ci --omit=dev
-            pm2 restart backend
+            cd /home/ubuntu/Assessment-backend || exit 1
+            git pull origin main || exit 1
+            npm ci --omit=dev || exit 1
+            pm2 reload backend || pm2 start app.js --name backend || exit 1
             pm2 save
