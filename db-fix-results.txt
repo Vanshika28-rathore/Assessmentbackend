@@ -1,0 +1,171 @@
+BEGIN
+DELETE 0
+                              ?column?                               
+---------------------------------------------------------------------
+ FIX 1 DONE: Deleted orphaned questions. Remaining orphaned count: 0
+(1 row)
+
+COMMIT
+BEGIN
+DELETE 3
+                                ?column?                                
+------------------------------------------------------------------------
+ FIX 2 DONE: Deleted duplicate questions. Remaining question count: 862
+(1 row)
+
+COMMIT
+BEGIN
+DELETE 40
+                             ?column?                              
+-------------------------------------------------------------------
+ FIX 3 DONE: Deleted orphaned results. Remaining orphaned count: 0
+(1 row)
+
+COMMIT
+BEGIN
+psql:db-fix.sql:94: NOTICE:  constraint "results_student_id_fkey" of relation "results" does not exist, skipping
+ALTER TABLE
+ALTER TABLE
+psql:db-fix.sql:95: NOTICE:  constraint "fk_results_student" of relation "results" does not exist, skipping
+ALTER TABLE
+                           ?column?                            
+---------------------------------------------------------------
+ FIX 4 DONE: Added ON DELETE CASCADE FK on results(student_id)
+(1 row)
+
+COMMIT
+BEGIN
+DELETE 248
+                                    ?column?                                     
+---------------------------------------------------------------------------------
+ FIX 5 DONE: Deleted orphaned proctoring_violations. Remaining orphaned count: 0
+(1 row)
+
+COMMIT
+BEGIN
+CREATE FUNCTION
+psql:db-fix.sql:148: NOTICE:  trigger "trg_cleanup_proctoring_on_test_delete" for relation "tests" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+CREATE FUNCTION
+psql:db-fix.sql:164: NOTICE:  trigger "trg_cleanup_forced_on_test_delete" for relation "tests" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+CREATE FUNCTION
+psql:db-fix.sql:192: NOTICE:  trigger "trg_cleanup_proctoring_on_student_delete" for relation "students" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+                                                            ?column?                                                             
+---------------------------------------------------------------------------------------------------------------------------------
+ FIX 6 DONE: Cleanup triggers created for proctoring_violations, forced_terminations, proctoring_messages on test/student delete
+(1 row)
+
+COMMIT
+BEGIN
+CREATE TABLE
+psql:db-fix.sql:219: NOTICE:  relation "idx_feedback_student_id" already exists, skipping
+CREATE INDEX
+psql:db-fix.sql:220: NOTICE:  relation "idx_feedback_test_id" already exists, skipping
+CREATE INDEX
+COMMENT
+                                      ?column?                                      
+------------------------------------------------------------------------------------
+ FIX 7 DONE: Created feedback table with proper FKs and UNIQUE(student_id, test_id)
+(1 row)
+
+COMMIT
+BEGIN
+ALTER TABLE
+psql:db-fix.sql:237: NOTICE:  constraint "students_roll_number_key" of relation "students" does not exist, skipping
+psql:db-fix.sql:238: NOTICE:  constraint "uq_students_roll_number_notnull" of relation "students" does not exist, skipping
+ALTER TABLE
+CREATE INDEX
+                                    ?column?                                    
+--------------------------------------------------------------------------------
+ FIX 8 DONE: Added partial UNIQUE index on students(roll_number) WHERE NOT NULL
+(1 row)
+
+COMMIT
+BEGIN
+ALTER TABLE
+UPDATE 16
+psql:db-fix.sql:275: NOTICE:  constraint "fk_students_institute" of relation "students" does not exist, skipping
+ALTER TABLE
+ALTER TABLE
+CREATE INDEX
+                                     ?column?                                     
+----------------------------------------------------------------------------------
+ FIX 9 DONE: institute_id FK added. Matched students: 16 out of 16 total students
+(1 row)
+
+COMMIT
+BEGIN
+CREATE FUNCTION
+psql:db-fix.sql:320: NOTICE:  trigger "trg_deactivate_on_institute_delete" for relation "institutes" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+                                              ?column?                                               
+-----------------------------------------------------------------------------------------------------
+ FIX 10 DONE: Trigger added ??? deleting an institute deactivates all related student test_assignments
+(1 row)
+
+COMMIT
+BEGIN
+UPDATE 7
+                                                            ?column?                                                            
+--------------------------------------------------------------------------------------------------------------------------------
+ FIX 11 DONE: Deactivated institute_test_assignments for inactive institutes. Count: 0 remaining active for inactive institutes
+(1 row)
+
+COMMIT
+BEGIN
+CREATE FUNCTION
+psql:db-fix.sql:376: NOTICE:  trigger "trg_institute_soft_delete" for relation "institutes" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+                                                       ?column?                                                        
+-----------------------------------------------------------------------------------------------------------------------
+ FIX 12 DONE: Soft-delete trigger on institutes ??? deactivates institute_test_assignments when institute is deactivated
+(1 row)
+
+COMMIT
+       ?column?        
+-----------------------
+ Orphaned questions: 0
+(1 row)
+
+               ?column?               
+--------------------------------------
+ Orphaned results (bad student_id): 0
+(1 row)
+
+             ?column?              
+-----------------------------------
+ Orphaned proctoring_violations: 0
+(1 row)
+
+           ?column?           
+------------------------------
+ Duplicate question groups: 0
+(1 row)
+
+          tbl          | rows 
+-----------------------+------
+ feedback              |    0
+ proctoring_violations |  256
+ questions             |  862
+ results               |   36
+ students              |   16
+ tests                 |   26
+(6 rows)
+
+ total_students | with_institute_id | without_institute_id 
+----------------+-------------------+----------------------
+             16 |                16 |                    0
+(1 row)
+
+                 status                 
+----------------------------------------
+ === ALL FIXES APPLIED SUCCESSFULLY ===
+(1 row)
+

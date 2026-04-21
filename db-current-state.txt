@@ -1,0 +1,9 @@
+    tbl    | rows 
+-----------+------
+ exams     |   66
+ results   |   36
+ questions |  862
+ tests     |   26
+ students  |   16
+(5 rows)
+

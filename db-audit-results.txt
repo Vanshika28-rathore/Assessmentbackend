@@ -1,0 +1,196 @@
+
+======================================================================
+  DATABASE AUDIT  --  13/4/2026, 11:55:27 am
+  DB: Shnoor_Assignment_Portal   HOST: localhost
+======================================================================
+
+======================================================================
+  SECTION 1 -- Row Counts per Table
+======================================================================
+  [INFO] students                            --> 16 rows
+  [INFO] admins                              --> 5 rows
+  [INFO] tests                               --> 26 rows
+  [INFO] questions                           --> 865 rows
+  [INFO] exams                               --> 66 rows
+  [INFO] results                             --> 76 rows
+  [INFO] student_responses                   --> 0 rows
+  [INFO] test_attempts                       --> 4 rows
+  [INFO] exam_progress                       --> 5 rows
+  [INFO] institutes                          --> 14 rows
+  [INFO] institute_test_assignments          --> 29 rows
+  [INFO] test_assignments                    --> 131 rows
+  [INFO] test_job_roles                      --> 28 rows
+  [WARN] Table 'feedback' does NOT exist
+  [INFO] coding_questions                    --> 6 rows
+  [INFO] coding_test_cases                   --> 15 rows
+  [INFO] student_coding_submissions          --> 3 rows
+  [INFO] proctoring_violations               --> 504 rows
+  [INFO] proctoring_messages                 --> 3 rows
+  [INFO] forced_terminations                 --> 1 rows
+  [INFO] system_settings                     --> 1 rows
+  [INFO] student_messages                    --> 45 rows
+  [INFO] interviews                          --> 9 rows
+  [INFO] interview_chat_messages             --> 9 rows
+  [INFO] job_openings                        --> 3 rows
+  [INFO] job_notifications                   --> 30 rows
+  [INFO] job_applications                    --> 1 rows
+  [INFO] job_opening_tests                   --> 3 rows
+  [INFO] job_eligibility_rules               --> 0 rows
+  [INFO] otps                                --> 14 rows
+
+======================================================================
+  SECTION 2 -- Duplicate Detection
+======================================================================
+  [OK]   No duplicate tests
+  [ERR]  Duplicate QUESTIONS found (2 groups):
+       test_id=90  count=3  text="# Dummy Python Program
+
+import random
+import time
+
+class Dum"
+       test_id=90  count=2  text="Reading comprehension???or extracting meaning from what you re"
+  [OK]   No duplicate student emails
+  [ERR]  Duplicate student ROLL NUMBERS:
+       roll=null  count=2
+  [OK]   No duplicate test_attempts (null job_application_id)
+  [OK]   No duplicate student_responses
+  [OK]   No duplicate exam_progress rows
+  [OK]   No duplicate coding submissions
+  [OK]   No duplicate job_applications
+  [OK]   No duplicate active OTPs
+
+======================================================================
+  SECTION 3 -- Orphaned Records (Broken FK References)
+======================================================================
+  [OK]   questions with non-existent test_id
+  [ERR]  40 orphaned rows -- results with non-existent student_id
+  [OK]   results with non-existent exam_id
+  [OK]   student_responses with non-existent student_id
+  [OK]   student_responses with non-existent test_id
+  [OK]   student_responses with non-existent question_id
+  [OK]   test_attempts with non-existent student_id
+  [OK]   test_attempts with non-existent test_id
+  [OK]   exam_progress with non-existent student_id
+  [OK]   exam_progress with non-existent test_id
+  [OK]   test_assignments with non-existent test_id
+  [OK]   test_assignments with non-existent student_id
+  [OK]   institute_test_assignments with non-existent institute_id
+  [OK]   institute_test_assignments with non-existent test_id
+  [OK]   students whose institute name is not in institutes table
+  [WARN] Skip (no table 'feedback'): feedback with non-existent student_id
+  [WARN] Skip (no table 'feedback'): feedback with non-existent test_id
+  [OK]   coding_questions with non-existent test_id
+  [OK]   coding_test_cases with non-existent coding_question_id
+  [OK]   student_coding_submissions with non-existent coding_question_id
+  [OK]   student_coding_submissions with non-existent test_id
+  [OK]   interviews with non-existent student_id
+  [OK]   interviews with non-existent test_id
+  [OK]   interview_chat_messages with non-existent interview_id
+  [OK]   job_applications with non-existent job_opening_id
+  [OK]   job_applications with non-existent student_id
+  [OK]   job_notifications with non-existent job_opening_id
+  [OK]   job_notifications with non-existent student_id
+  [OK]   job_opening_tests with non-existent job_opening_id
+  [OK]   job_opening_tests with non-existent test_id
+  [OK]   job_eligibility_rules with non-existent job_opening_id
+  [OK]   test_job_roles with non-existent test_id
+  [ERR]  248 orphaned rows -- proctoring_violations with test_id not in tests
+  [OK]   test_attempts with non-existent job_application_id
+
+======================================================================
+  SECTION 4 -- Foreign Key Constraint Audit (CASCADE check)
+======================================================================
+  [OK]   CASCADE OK: questions.test_id -> tests
+  [OK]   CASCADE OK: student_responses.student_id -> students
+  [OK]   CASCADE OK: student_responses.test_id -> tests
+  [OK]   CASCADE OK: student_responses.question_id -> questions
+  [OK]   CASCADE OK: test_attempts.student_id -> students
+  [OK]   CASCADE OK: test_attempts.test_id -> tests
+  [OK]   CASCADE OK: exam_progress.student_id -> students
+  [OK]   CASCADE OK: exam_progress.test_id -> tests
+  [OK]   CASCADE OK: test_assignments.test_id -> tests
+  [OK]   CASCADE OK: test_assignments.student_id -> students
+  [OK]   CASCADE OK: institute_test_assignments.institute_id -> institutes
+  [OK]   CASCADE OK: institute_test_assignments.test_id -> tests
+  [ERR]  MISSING FK: feedback.student_id -> students  (no FK constraint found)
+  [ERR]  MISSING FK: feedback.test_id -> tests  (no FK constraint found)
+  [OK]   CASCADE OK: coding_questions.test_id -> tests
+  [OK]   CASCADE OK: coding_test_cases.coding_question_id -> coding_questions
+  [OK]   CASCADE OK: student_coding_submissions.coding_question_id -> coding_questions
+  [OK]   CASCADE OK: student_coding_submissions.test_id -> tests
+  [ERR]  MISSING FK: results.student_id -> students  (no FK constraint found)
+  [OK]   CASCADE OK: results.exam_id -> exams
+  [OK]   CASCADE OK: interviews.student_id -> students
+  [OK]   CASCADE OK: interviews.test_id -> tests
+  [OK]   CASCADE OK: interview_chat_messages.interview_id -> interviews
+  [OK]   CASCADE OK: job_notifications.job_opening_id -> job_openings
+  [OK]   CASCADE OK: job_notifications.student_id -> students
+  [OK]   CASCADE OK: job_applications.job_opening_id -> job_openings
+  [OK]   CASCADE OK: job_applications.student_id -> students
+  [OK]   CASCADE OK: job_opening_tests.job_opening_id -> job_openings
+  [OK]   CASCADE OK: job_opening_tests.test_id -> tests
+  [OK]   CASCADE OK: job_eligibility_rules.job_opening_id -> job_openings
+  [OK]   CASCADE OK: test_job_roles.test_id -> tests
+  [WARN] 'forced_terminations' has NO foreign key constraints (uses VARCHAR student_id -- CASCADE won't work)
+  [WARN] 'proctoring_violations' has NO foreign key constraints (uses VARCHAR student_id -- CASCADE won't work)
+
+======================================================================
+  SECTION 5 -- Missing UNIQUE Constraints
+======================================================================
+  [OK]   UNIQUE exists: student_responses(student_id, question_id)
+  [OK]   UNIQUE exists: test_attempts(student_id, test_id, job_application_id)
+  [OK]   UNIQUE exists: exam_progress(student_id, test_id)
+  [OK]   UNIQUE exists: test_assignments(test_id, student_id)
+  [OK]   UNIQUE exists: institute_test_assignments(institute_id, test_id)
+  [WARN] Skip UNIQUE check (no table 'feedback')
+  [OK]   UNIQUE exists: job_notifications(job_opening_id, student_id)
+  [OK]   UNIQUE exists: job_applications(job_opening_id, student_id)
+  [OK]   UNIQUE exists: job_opening_tests(job_opening_id, test_id)
+  [OK]   UNIQUE exists: test_job_roles(test_id, job_role)
+  [OK]   UNIQUE exists: student_coding_submissions(student_id, coding_question_id, test_id)
+  [OK]   UNIQUE exists: students(email)
+  [ERR]  MISSING UNIQUE on students(roll_number)
+  [OK]   UNIQUE exists: institutes(name)
+  [OK]   UNIQUE exists: admins(email)
+
+======================================================================
+  SECTION 6 -- Soft-Delete / is_active Consistency
+======================================================================
+  [WARN] 2 students belong to INACTIVE institutes
+  [OK]   No active assignments on archived tests
+  [WARN] 7 active institute_test_assignments for INACTIVE institutes
+
+======================================================================
+  SECTION 7 -- Summary & What Needs Fixing
+======================================================================
+
+DUPLICATES
+  - If duplicate tests/questions found: the API doesn't check before inserting.
+    Fix: Add UNIQUE constraint on tests(title, start_datetime) and use
+         INSERT ... ON CONFLICT DO NOTHING.
+
+MISSING CASCADE (proctoring_violations / forced_terminations)
+  - These tables store student_id as VARCHAR (Firebase UID), not integer FK.
+    Deleting a student will NOT auto-delete these rows.
+    Fix: Add manual DELETE in the delete-student route, or add a trigger.
+
+INSTITUTE -> STUDENTS linkage
+  - students.institute is plain TEXT, not a FK to institutes.id.
+    Deleting an institute does NOT cascade to students.
+    Fix: Add institute_id INTEGER FK column to students with ON DELETE SET NULL.
+
+EXAMS TABLE
+  - 'exams' has no FK to 'tests'; it is a legacy table.
+    Consider whether it is still used or can be retired.
+
+UNIQUE CONSTRAINT for test_attempts
+  - The old UNIQUE(student_id, test_id) was dropped; new one includes
+    job_application_id. Verify it was applied correctly.
+
+After reviewing the output above, run the generated db-fix.sql 
+to clean duplicates and add missing CASCADE rules.
+
+
+Audit complete.
+

@@ -1,0 +1,210 @@
+﻿
+ΓòöΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòù
+Γòæ          DATABASE AUDIT ΓÇö 13/4/2026, 11:53:25 am           
+Γòæ          DB: Shnoor_Assignment_Portal  HOST: localhost
+ΓòÜΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓò¥
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 1 ΓÇö Row Counts per Table
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Γä╣  students                            ΓåÆ 16 rows
+  Γä╣  admins                              ΓåÆ 5 rows
+  Γä╣  tests                               ΓåÆ 26 rows
+  Γä╣  questions                           ΓåÆ 865 rows
+  Γä╣  exams                               ΓåÆ 66 rows
+  Γä╣  results                             ΓåÆ 76 rows
+  Γä╣  student_responses                   ΓåÆ 0 rows
+  Γä╣  test_attempts                       ΓåÆ 4 rows
+  Γä╣  exam_progress                       ΓåÆ 5 rows
+  Γä╣  institutes                          ΓåÆ 14 rows
+  Γä╣  institute_test_assignments          ΓåÆ 29 rows
+  Γä╣  test_assignments                    ΓåÆ 131 rows
+  Γä╣  test_job_roles                      ΓåÆ 28 rows
+  ΓÜá  Table 'feedback' does NOT exist in the database
+  Γä╣  coding_questions                    ΓåÆ 6 rows
+  Γä╣  coding_test_cases                   ΓåÆ 15 rows
+  Γä╣  student_coding_submissions          ΓåÆ 3 rows
+  Γä╣  proctoring_violations               ΓåÆ 504 rows
+  Γä╣  proctoring_messages                 ΓåÆ 3 rows
+  Γä╣  forced_terminations                 ΓåÆ 1 rows
+  Γä╣  system_settings                     ΓåÆ 1 rows
+  Γä╣  student_messages                    ΓåÆ 45 rows
+  Γä╣  interviews                          ΓåÆ 9 rows
+  Γä╣  interview_chat_messages             ΓåÆ 9 rows
+  Γä╣  job_openings                        ΓåÆ 3 rows
+  Γä╣  job_notifications                   ΓåÆ 30 rows
+  Γä╣  job_applications                    ΓåÆ 1 rows
+  Γä╣  job_opening_tests                   ΓåÆ 3 rows
+  Γä╣  job_eligibility_rules               ΓåÆ 0 rows
+  Γä╣  otps                                ΓåÆ 14 rows
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 2 ΓÇö Duplicate Detection
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Γ£ö  No duplicate tests found
+  Γ£ÿ  Duplicate QUESTIONS found (2 groups, showing top 20):
+     test_id=90  count=3  text="# Dummy Python Program
+
+import random
+import time
+
+class Dum..."
+     test_id=90  count=2  text="Reading comprehensionΓÇöor extracting meaning from what you re..."
+  Γ£ö  No duplicate student emails
+  Γ£ÿ  Duplicate student ROLL NUMBERS found:
+     roll=null  count=2
+  Γ£ö  No duplicate test_attempts (without job_application_id)
+  Γ£ö  No duplicate student_responses
+  Γ£ö  No duplicate exam_progress rows
+  Γ£ö  No duplicate coding submissions
+  Γ£ö  No duplicate job_applications
+  Γ£ö  No duplicate active OTPs
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 3 ΓÇö Orphaned Records (Broken FK References)
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Γ£ö  questions with non-existent test_id
+  Γ£ÿ  40 orphaned rows ΓÇö results with non-existent student_id
+  Γ£ö  results with non-existent exam_id
+  Γ£ö  student_responses with non-existent student_id
+  Γ£ö  student_responses with non-existent test_id
+  Γ£ö  student_responses with non-existent question_id
+  Γ£ö  test_attempts with non-existent student_id
+  Γ£ö  test_attempts with non-existent test_id
+  Γ£ö  exam_progress with non-existent student_id
+  Γ£ö  exam_progress with non-existent test_id
+  Γ£ö  test_assignments with non-existent test_id
+  Γ£ö  test_assignments with non-existent student_id
+  Γ£ö  institute_test_assignments with non-existent institute_id
+  Γ£ö  institute_test_assignments with non-existent test_id
+  Γ£ö  students whose "institute" is not in institutes table
+  ΓÜá  Skipping check (table 'feedback' not found): feedback with non-existent student_id
+  ΓÜá  Skipping check (table 'feedback' not found): feedback with non-existent test_id
+  Γ£ö  coding_questions with non-existent test_id
+  Γ£ö  coding_test_cases with non-existent coding_question_id
+  Γ£ö  student_coding_submissions with non-existent coding_question_id
+  Γ£ö  student_coding_submissions with non-existent test_id
+  Γ£ö  interviews with non-existent student_id
+  Γ£ö  interviews with non-existent test_id
+  Γ£ö  interview_chat_messages with non-existent interview_id
+  Γ£ö  job_applications with non-existent job_opening_id
+  Γ£ö  job_applications with non-existent student_id
+  Γ£ö  job_notifications with non-existent job_opening_id
+  Γ£ö  job_notifications with non-existent student_id
+  Γ£ö  job_opening_tests with non-existent job_opening_id
+  Γ£ö  job_opening_tests with non-existent test_id
+  Γ£ö  job_eligibility_rules with non-existent job_opening_id
+  Γ£ö  test_job_roles with non-existent test_id
+  Γ£ÿ  248 orphaned rows ΓÇö proctoring_violations with test_id not in tests
+  Γ£ö  test_attempts with non-existent job_application_id
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 4 ΓÇö Foreign Key Constraint Audit (CASCADE check)
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Γ£ö  CASCADE OK: questions.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: student_responses.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: student_responses.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: student_responses.question_id ΓåÆ questions
+  Γ£ö  CASCADE OK: test_attempts.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: test_attempts.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: exam_progress.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: exam_progress.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: test_assignments.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: test_assignments.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: institute_test_assignments.institute_id ΓåÆ institutes
+  Γ£ö  CASCADE OK: institute_test_assignments.test_id ΓåÆ tests
+  Γ£ÿ  MISSING FK: feedback.student_id ΓåÆ students  (no constraint found)
+  Γ£ÿ  MISSING FK: feedback.test_id ΓåÆ tests  (no constraint found)
+  Γ£ö  CASCADE OK: coding_questions.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: coding_test_cases.coding_question_id ΓåÆ coding_questions
+  Γ£ö  CASCADE OK: student_coding_submissions.coding_question_id ΓåÆ coding_questions
+  Γ£ö  CASCADE OK: student_coding_submissions.test_id ΓåÆ tests
+  Γ£ÿ  MISSING FK: results.student_id ΓåÆ students  (no constraint found)
+  Γ£ö  CASCADE OK: results.exam_id ΓåÆ exams
+  Γ£ö  CASCADE OK: interviews.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: interviews.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: interview_chat_messages.interview_id ΓåÆ interviews
+  Γ£ö  CASCADE OK: job_notifications.job_opening_id ΓåÆ job_openings
+  Γ£ö  CASCADE OK: job_notifications.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: job_applications.job_opening_id ΓåÆ job_openings
+  Γ£ö  CASCADE OK: job_applications.student_id ΓåÆ students
+  Γ£ö  CASCADE OK: job_opening_tests.job_opening_id ΓåÆ job_openings
+  Γ£ö  CASCADE OK: job_opening_tests.test_id ΓåÆ tests
+  Γ£ö  CASCADE OK: job_eligibility_rules.job_opening_id ΓåÆ job_openings
+  Γ£ö  CASCADE OK: test_job_roles.test_id ΓåÆ tests
+  ΓÜá  Table 'forced_terminations' has NO foreign key constraints ΓÇö it stores test_id/student_id as plain VARCHAR, so CASCADE won't work automatically
+  ΓÜá  Table 'proctoring_violations' has NO foreign key constraints ΓÇö it stores test_id/student_id as plain VARCHAR, so CASCADE won't work automatically
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 5 ΓÇö Missing UNIQUE Constraints
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Γ£ö  UNIQUE exists on student_responses(question_id, student_id)
+  Γ£ö  UNIQUE exists on test_attempts(job_application_id, student_id, test_id)
+  Γ£ö  UNIQUE exists on exam_progress(student_id, test_id)
+  Γ£ö  UNIQUE exists on test_assignments(student_id, test_id)
+  Γ£ö  UNIQUE exists on institute_test_assignments(institute_id, test_id)
+  ΓÜá  Skipping UNIQUE check ΓÇö table 'feedback' not found
+  Γ£ö  UNIQUE exists on job_notifications(job_opening_id, student_id)
+  Γ£ö  UNIQUE exists on job_applications(job_opening_id, student_id)
+  Γ£ö  UNIQUE exists on job_opening_tests(job_opening_id, test_id)
+  Γ£ö  UNIQUE exists on test_job_roles(job_role, test_id)
+  Γ£ö  UNIQUE exists on student_coding_submissions(coding_question_id, student_id, test_id)
+  Γ£ö  UNIQUE exists on students(email)
+  Γ£ÿ  MISSING UNIQUE constraint on students(roll_number)
+  Γ£ö  UNIQUE exists on institutes(name)
+  Γ£ö  UNIQUE exists on admins(email)
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 6 ΓÇö Soft-Delete / is_active Consistency
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  ΓÜá  2 students belong to INACTIVE institutes (they can still log in)
+  Γ£ö  No active assignments on archived tests
+  ΓÜá  7 active institute_test_assignments for INACTIVE institutes
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  SECTION 7 ΓÇö Summary & What You Need to Fix
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+KEY ISSUES & RECOMMENDED FIXES:
+
+  1. DUPLICATES in tests / questions:
+     ΓåÆ These usually happen because insert logic doesn't check uniqueness.
+     ΓåÆ Fix: Add UNIQUE constraint on tests(title, start_datetime) or use
+       INSERT ... ON CONFLICT DO NOTHING in your create-test API route.
+
+  2. proctoring_violations / forced_terminations use VARCHAR student_id:
+     ΓåÆ They store Firebase UID strings, not integer student IDs.
+     ΓåÆ ON DELETE CASCADE won't fire from the students table.
+     ΓåÆ Fix: Add a trigger or application-level cleanup when a student is deleted.
+
+  3. CASCADE on institutes ΓåÆ students:
+     ΓåÆ students.institute is a plain text column, NOT a FK.
+     ΓåÆ Deleting an institute does NOT delete linked students automatically.
+     ΓåÆ If you want: Add institute_id INTEGER FK to students, then add CASCADE.
+
+  4. exams table:
+     ΓåÆ The 'exams' table has NO FK back to 'tests'. Results reference exams.
+     ΓåÆ This is a legacy table ΓÇö consider whether you still need it or whether
+       test_attempts replaces it.
+
+  5. test_attempts UNIQUE constraint changed:
+     ΓåÆ The old UNIQUE(student_id, test_id) was dropped for job_application support.
+     ΓåÆ Make sure the new UNIQUE(student_id, test_id, job_application_id) exists.
+
+  What already has proper CASCADE:
+     ΓåÆ questions       ΓåÆ tests (ON DELETE CASCADE)           Γ£ö
+     ΓåÆ student_responses  ΓåÆ students/tests/questions (CASCADE)  Γ£ö
+     ΓåÆ test_attempts   ΓåÆ students/tests (CASCADE)            Γ£ö
+     ΓåÆ exam_progress   ΓåÆ students/tests (CASCADE)            Γ£ö
+     ΓåÆ feedback        ΓåÆ students/tests (CASCADE)            Γ£ö
+     ΓåÆ coding_test_cases ΓåÆ coding_questions (CASCADE)        Γ£ö
+     ΓåÆ interviews      ΓåÆ students/tests (CASCADE)            Γ£ö
+     ΓåÆ interview_chat_messages ΓåÆ interviews (CASCADE)        Γ£ö
+     ΓåÆ job_applications ΓåÆ job_openings/students (CASCADE)    Γ£ö
+
+  Run this script, look at the Γ£ÿ (red) lines, then ask to generate
+  the actual SQL fix script based on real findings.
+
+
+Audit complete.
+

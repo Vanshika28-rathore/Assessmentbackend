@@ -1,0 +1,115 @@
+
+======================================================================
+  MASTER DB FIX ??? Starting...
+  DB: Shnoor_Assignment_Portal
+======================================================================
+
+SECTION 1: Deduplicating exams table...
+DO
+psql:master-db-fix.sql:70: NOTICE:  [SECTION 1] exams: 32 ??? 32 rows (removed 0 duplicates, re-pointed 0 results)
+SECTION 2: Adding UNIQUE constraint on exams(name)...
+psql:master-db-fix.sql:93: NOTICE:  [SECTION 2] UNIQUE(name) already exists on exams ??? skipped
+DO
+SECTION 3: Removing duplicate questions within tests...
+psql:master-db-fix.sql:125: NOTICE:  [SECTION 3] questions: 862 ??? 862 rows (removed 0 duplicates)
+DO
+SECTION 4: Removing orphaned questions (deleted tests)...
+psql:master-db-fix.sql:150: NOTICE:  [SECTION 4] No orphaned questions ??? already clean
+DO
+SECTION 5: Removing orphaned results (deleted students)...
+psql:master-db-fix.sql:176: NOTICE:  [SECTION 5] No orphaned results ??? already clean
+DO
+SECTION 6: Adding FK on results(student_id) with CASCADE...
+psql:master-db-fix.sql:212: NOTICE:  [SECTION 6] FK results(student_id) ??? students(id) ON DELETE CASCADE added
+DO
+SECTION 7: Removing orphaned proctoring_violations...
+psql:master-db-fix.sql:241: NOTICE:  [SECTION 7] No orphaned proctoring_violations ??? already clean
+DO
+SECTION 8: Creating feedback table if missing...
+psql:master-db-fix.sql:258: NOTICE:  relation "feedback" already exists, skipping
+CREATE TABLE
+psql:master-db-fix.sql:260: NOTICE:  relation "idx_feedback_student_id" already exists, skipping
+CREATE INDEX
+CREATE INDEX
+psql:master-db-fix.sql:261: NOTICE:  relation "idx_feedback_test_id" already exists, skipping
+COMMENT
+psql:master-db-fix.sql:266: NOTICE:  [SECTION 8] feedback table ensured (created or already existed)
+DO
+SECTION 9: Adding institute_id FK column to students...
+psql:master-db-fix.sql:319: NOTICE:  [SECTION 9] institute_id column already exists ??? skipped
+psql:master-db-fix.sql:319: NOTICE:  [SECTION 9] Populated institute_id for matched students
+psql:master-db-fix.sql:319: NOTICE:  [SECTION 9] FK already exists ??? skipped
+psql:master-db-fix.sql:319: NOTICE:  relation "idx_students_institute_id" already exists, skipping
+DO
+SECTION 10: Adding UNIQUE index on students(roll_number)...
+DO
+SECTION 11: Adding cleanup triggers for proctoring tables...
+psql:master-db-fix.sql:346: NOTICE:  [SECTION 10] UNIQUE index already exists ??? skipped
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+psql:master-db-fix.sql:394: NOTICE:  [SECTION 11] Proctoring cleanup triggers installed on tests + students
+DO
+SECTION 12: Adding institute cascade triggers...
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+CREATE FUNCTION
+DROP TRIGGER
+CREATE TRIGGER
+psql:master-db-fix.sql:454: NOTICE:  [SECTION 12] Institute cascade triggers installed
+DO
+SECTION 13: Deactivating assignments for inactive institutes...
+psql:master-db-fix.sql:480: NOTICE:  [SECTION 13] No stale assignments ??? already clean
+DO
+SECTION 14: Checking tests <-> exams alignment...
+psql:master-db-fix.sql:510: NOTICE:  [SECTION 14] Tests without a matching exam row: 11
+psql:master-db-fix.sql:510: NOTICE:  [SECTION 14] Exam rows with no matching test: 17
+psql:master-db-fix.sql:510: NOTICE:  [SECTION 14] (These are informational ??? no action needed)
+DO
+
+======================================================================
+  VERIFICATION ??? Final State
+======================================================================
+         table_name         | rows 
+----------------------------+------
+ admins                     |    5
+ coding_questions           |    6
+ coding_test_cases          |   15
+ exam_progress              |    5
+ exams                      |   32
+ feedback                   |    0
+ forced_terminations        |    1
+ institute_test_assignments |   29
+ institutes                 |   14
+ interview_chat_messages    |    9
+ interviews                 |    9
+ job_applications           |    1
+ job_notifications          |   30
+ job_opening_tests          |    3
+ job_openings               |    3
+ proctoring_messages        |    3
+ proctoring_violations      |  256
+ questions                  |  862
+ results                    |   36
+ student_coding_submissions |    3
+ student_messages           |   45
+ students                   |   16
+ test_assignments           |  131
+ test_attempts              |    4
+ tests                      |   26
+(25 rows)
+
+ orphaned_questions | orphaned_results | orphaned_violations | duplicate_question_groups | duplicate_exams 
+--------------------+------------------+---------------------+---------------------------+-----------------
+                  0 |                0 |                   0 |                         0 |               0
+(1 row)
+
+                  final_status                   
+-------------------------------------------------
+ ???  ALL CHECKS PASSED ??? Database is consistent!
+(1 row)
+
