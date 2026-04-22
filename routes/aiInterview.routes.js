@@ -35,7 +35,7 @@ router.post('/upload-resume', upload.single('resume'), async (req, res) => {
             return res.status(400).json({ success: false, message: 'File is not a valid PDF' });
         }
 
-        const contextText = resumeText.substring(0, 800);
+        const contextText = resumeText.substring(0, 500);
 
         const systemPrompt = `You are a friendly, basic technical interviewer for a BEGINNER.
 Candidate's Resume extract: "${contextText}"
@@ -43,7 +43,8 @@ Candidate's Resume extract: "${contextText}"
 RULES:
 1. Speak naturally. Do NOT write transcripts or "Interviewer:".
 2. Ask EXTREMELY SIMPLE, short, basic questions about the skills mentioned in the resume.
-3. Stop after exactly ONE question.`;
+    3. Never repeat labels like "Candidate's response" or quote the candidate answer back verbatim.
+    4. Stop after exactly ONE question.`;
 
         const greeting = "Hello! I am your AI interviewer. I have successfully analyzed your resume. Please type or say 'Yes' when you are ready for your first question.";
 
@@ -74,7 +75,7 @@ router.post('/chat', async (req, res) => {
 
         messages.push({
             role: 'user',
-            content: `Candidate's answer: "${answer}"\n\n(Interviewer Note: Acknowledge this answer briefly, then ask the next simple technical question based on their skills. Keep it friendly and beginner-level.)`
+            content: `${answer}\n\n(Interviewer Note: Briefly acknowledge in one short sentence without repeating the exact answer text, then ask one simple next technical question based on their skills. Keep it friendly and beginner-level.)`
         });
 
         const ollamaResponse = await axios.post(OLLAMA_URL, {
@@ -82,12 +83,12 @@ router.post('/chat', async (req, res) => {
             messages: messages,
             stream: false,
             options: {
-                num_predict: 60,
-                num_ctx: 1024,
-                temperature: 0.3,
-                top_p: 0.2
+                num_predict: 24,
+                num_ctx: 768,
+                temperature: 0.2,
+                top_p: 0.15
             }
-        });
+        }, { timeout: 45000 });
 
         let replyContent = ollamaResponse.data.message?.content || '';
         replyContent = replyContent.replace(/<\|.*?\|>/g, '').trim();
@@ -112,6 +113,9 @@ router.post('/chat', async (req, res) => {
 
     } catch (error) {
         console.error('AI Interview Chat Error:', error.message);
+        if (error.code === 'ECONNABORTED') {
+            return res.status(504).json({ success: false, message: 'AI response timed out. Please try again.' });
+        }
         res.status(500).json({ success: false, message: 'Failed to get AI response' });
     }
 });
