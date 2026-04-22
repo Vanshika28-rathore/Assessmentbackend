@@ -1,24 +1,158 @@
 name: Deploy Backend
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:              # enables manual rollback from GitHub UI
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to rollback to (find in git log)'
+        required: true
+        type: string
+
+env:
+  APP_DIR: /home/ubuntu/Assessment-backend
+  PM2_APP_NAME: backend
+  NODE_VERSION: '20'
 
 jobs:
+  # ─────────────────────────────────────────
+  # JOB 1: RUN TESTS
+  # ─────────────────────────────────────────
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '20'
-      - run: npm ci
-      - run: npm test
+    if: github.event_name == 'push'   # skip tests on manual rollback trigger
 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install all dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  # ─────────────────────────────────────────
+  # JOB 2: DEPLOY
+  # ─────────────────────────────────────────
   deploy:
+    name: Deploy to EC2
     needs: test
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'   # skip deploy on manual rollback trigger
+
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set commit SHA
+        id: vars
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - name: Deploy to EC2
+        id: deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 30s
+          command_timeout: 10m
+          debug: false
+          script: |
+
+            echo "==============================="
+            echo "  DEPLOYMENT STARTED"
+            echo "  Commit: ${{ steps.vars.outputs.sha }}"
+            echo "  Time:   $(date)"
+            echo "==============================="
+
+            echo ""
+            echo "====== SYSTEM INFO ======"
+            whoami
+            node -v  || { echo "❌ Node not found"; exit 1; }
+            npm -v   || { echo "❌ npm not found"; exit 1; }
+            pm2 -v   || { echo "❌ PM2 not found — run: npm install -g pm2"; exit 1; }
+
+            echo ""
+            echo "====== NAVIGATING TO APP ======"
+            cd ${{ env.APP_DIR }} || { echo "❌ Directory not found"; exit 1; }
+            echo "✅ In directory: $(pwd)"
+
+            echo ""
+            echo "====== SAVING LAST GOOD COMMIT ======"
+            LAST_GOOD_COMMIT=$(git rev-parse HEAD)
+            echo $LAST_GOOD_COMMIT > /tmp/last_good_commit.txt
+            echo "✅ Saved: $LAST_GOOD_COMMIT"
+
+            echo ""
+            echo "====== GIT PULL ======"
+            git fetch origin || { echo "❌ Git fetch failed"; exit 1; }
+            git pull origin main || { echo "❌ Git pull failed"; exit 1; }
+            echo "✅ Git pull successful"
+
+            echo ""
+            echo "====== INSTALLING DEPENDENCIES ======"
+            npm ci --omit=dev || { echo "❌ npm install failed"; exit 1; }
+            echo "✅ Dependencies installed"
+
+            echo ""
+            echo "====== PM2 STATUS (BEFORE) ======"
+            pm2 list
+
+            echo ""
+            echo "====== RESTARTING APP ======"
+            pm2 reload ${{ env.PM2_APP_NAME }} \
+              || pm2 start app.js --name ${{ env.PM2_APP_NAME }} \
+              || { echo "❌ PM2 failed to start"; exit 1; }
+            pm2 save
+            echo "✅ App restarted"
+
+            echo ""
+            echo "====== WAITING FOR APP TO STABILIZE ======"
+            sleep 5
+
+            echo ""
+            echo "====== HEALTH CHECK ======"
+            STATUS=$(pm2 jlist | python3 -c "
+            import sys, json
+            procs = json.load(sys.stdin)
+            app = next((p for p in procs if p['name'] == '${{ env.PM2_APP_NAME }}'), None)
+            print(app['pm2_env']['status'] if app else 'not_found')
+            ")
+            echo "PM2 Status: $STATUS"
+
+            if [ "$STATUS" != "online" ]; then
+              echo "❌ App is not online (status: $STATUS)"
+              echo ""
+              echo "====== APP LOGS (last 30 lines) ======"
+              pm2 logs ${{ env.PM2_APP_NAME }} --lines 30 --nostream
+              exit 1
+            fi
+
+            echo "✅ App is online"
+
+            echo ""
+            echo "====== APP LOGS (last 10 lines) ======"
+            pm2 logs ${{ env.PM2_APP_NAME }} --lines 10 --nostream
+
+            echo ""
+            echo "==============================="
+            echo "  ✅ DEPLOYMENT SUCCESSFUL"
+            echo "  Commit: ${{ steps.vars.outputs.sha }}"
+            echo "  Time:   $(date)"
+            echo "==============================="
+
+      - name: Auto Rollback
+        if: failure()
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -27,8 +161,64 @@ jobs:
           timeout: 30s
           command_timeout: 10m
           script: |
-            cd /home/ubuntu/Assessment-backend || exit 1
-            git pull origin main || exit 1
-            npm ci --omit=dev || exit 1
-            pm2 reload backend || pm2 start app.js --name backend || exit 1
+
+            echo "==============================="
+            echo "  ⚠️  DEPLOYMENT FAILED"
+            echo "  STARTING AUTO ROLLBACK..."
+            echo "==============================="
+
+            cd ${{ env.APP_DIR }} || exit 1
+
+            if [ -f /tmp/last_good_commit.txt ]; then
+              ROLLBACK_SHA=$(cat /tmp/last_good_commit.txt)
+              echo "Rolling back to: $ROLLBACK_SHA"
+              git checkout $ROLLBACK_SHA || { echo "❌ Rollback failed"; exit 1; }
+            else
+              echo "No saved commit found, rolling back 1 commit..."
+              git checkout HEAD~1 || { echo "❌ Rollback failed"; exit 1; }
+            fi
+
+            npm ci --omit=dev || { echo "❌ npm install failed during rollback"; exit 1; }
+            pm2 reload ${{ env.PM2_APP_NAME }} || pm2 start app.js --name ${{ env.PM2_APP_NAME }} || exit 1
             pm2 save
+
+            echo "==============================="
+            echo "  ✅ ROLLBACK SUCCESSFUL"
+            echo "==============================="
+
+  # ─────────────────────────────────────────
+  # JOB 3: MANUAL ROLLBACK
+  # ─────────────────────────────────────────
+  manual-rollback:
+    name: Manual Rollback
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'  # only runs on manual trigger
+
+    steps:
+      - name: Rollback to specific commit
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 30s
+          command_timeout: 10m
+          script: |
+
+            echo "==============================="
+            echo "  MANUAL ROLLBACK STARTED"
+            echo "  Target: ${{ github.event.inputs.commit_sha }}"
+            echo "==============================="
+
+            cd ${{ env.APP_DIR }} || exit 1
+            git fetch origin || exit 1
+            git checkout ${{ github.event.inputs.commit_sha }} || { echo "❌ Commit SHA not found"; exit 1; }
+            npm ci --omit=dev || exit 1
+            pm2 reload ${{ env.PM2_APP_NAME }} || pm2 start app.js --name ${{ env.PM2_APP_NAME }} || exit 1
+            pm2 save
+
+            echo "✅ Rolled back to ${{ github.event.inputs.commit_sha }}"
+
+            echo "==============================="
+            echo "  ✅ MANUAL ROLLBACK SUCCESSFUL"
+            echo "==============================="
