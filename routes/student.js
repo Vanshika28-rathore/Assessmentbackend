@@ -841,30 +841,31 @@ router.post('/submit-exam', async (req, res) => {
         const status = percentage >= 50 ? 'Pass' : 'Fail';
 
         // 5. Find or create exam record
-        // One exam record is shared by all students taking the same test
+        // FIX: Use INSERT ... ON CONFLICT DO NOTHING so the same exam name (= test title)
+        // is never duplicated. Previously, every submission created a brand-new exam row,
+        // resulting in thousands of duplicate rows.
         let finalExamId = examId;
 
         if (!finalExamId) {
             const testInfo = await pool.query('SELECT title FROM tests WHERE id = $1', [testId]);
             const examName = testInfo.rows[0]?.title || 'Exam';
 
-            // Check if exam already exists
+            // DBs without a unique index on exams.name cannot use ON CONFLICT(name).
+            // Use a safe read-then-insert fallback to keep submission stable.
             const existingExam = await pool.query(
-                'SELECT id FROM exams WHERE name = $1',
+                'SELECT id FROM exams WHERE name = $1 ORDER BY id ASC LIMIT 1',
                 [examName]
             );
 
             if (existingExam.rows.length > 0) {
-                // Use existing exam
                 finalExamId = existingExam.rows[0].id;
             } else {
-                // Create new exam
-                const examInsert = await pool.query(`
+                const insertedExam = await pool.query(`
                     INSERT INTO exams (name, date, duration)
                     VALUES ($1, CURRENT_DATE, 60)
                     RETURNING id
                 `, [examName]);
-                finalExamId = examInsert.rows[0].id;
+                finalExamId = insertedExam.rows[0].id;
             }
         }
 
