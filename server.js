@@ -483,7 +483,7 @@ io.on('connection', (socket) => {
 
     // Connection timeout handling
     const connectionTimeout = setTimeout(() => {
-        if (!socket.studentId && !socket.isAdmin && !socket.interviewRole && !socket.studentDashboardId) {
+        if (!socket.studentId && !socket.isAdmin && !socket.interviewRole && !socket.studentDashboardId && !socket.rollNumber && !socket.isAdminSupport) {
             logger.warn({ socketId: socket.id }, 'Socket connection timeout - no identification received');
             socket.emit('connection-timeout', { message: 'Connection timeout - please refresh and try again' });
             socket.disconnect(true);
@@ -653,12 +653,14 @@ io.on('connection', (socket) => {
     // Frame-based proctoring - Receive frame from student (ONLY if monitored)
     socket.on('proctoring:frame', (data) => {
         const { studentId, studentName, testId, testTitle, frame, timestamp, aiViolations } = data;
+        const studentIdStr = String(studentId);
+        const isAIInterview = Number(testId) === -1 || String(testTitle || '').toLowerCase().includes('ai interview');
 
-        // Only relay frames from monitored students
-        if (monitoredStudents.has(studentId)) {
+        // Relay from monitored exam students; always relay AI interview sessions.
+        if (monitoredStudents.has(studentIdStr) || isAIInterview) {
             // Relay frame to all admins in monitoring room
             io.to('admin-room').emit('proctoring:frame', {
-                studentId,
+                studentId: studentIdStr,
                 studentName,
                 testId,
                 testTitle,

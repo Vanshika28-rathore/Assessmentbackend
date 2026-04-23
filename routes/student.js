@@ -1140,6 +1140,22 @@ router.post('/create', verifyAdmin, async (req, res) => {
 
         await client.query('BEGIN');
 
+        // Resolve institute name safely (case-insensitive) to avoid FK/casing issues.
+        const instituteResult = await client.query(
+            'SELECT name FROM institutes WHERE LOWER(name) = LOWER($1) LIMIT 1',
+            [String(institute || '').trim()]
+        );
+
+        if (instituteResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                message: 'Selected institute does not exist'
+            });
+        }
+
+        const canonicalInstitute = instituteResult.rows[0].name;
+
         // Check if student with same email already exists
         const existingStudent = await client.query(
             'SELECT id FROM students WHERE email = $1',
@@ -1154,8 +1170,7 @@ router.post('/create', verifyAdmin, async (req, res) => {
             });
         }
 
-        const normalizedInstitute = institute.trim().toLowerCase();
-        const displayInstitute = institute.trim();
+        const normalizedInstitute = canonicalInstitute.trim().toLowerCase();
 
         // Generate a unique roll_number if not provided
         let finalRollNumber = roll_number && roll_number.trim() ? roll_number.trim() : null;
@@ -1167,12 +1182,29 @@ router.post('/create', verifyAdmin, async (req, res) => {
             finalRollNumber = `${normalizedInstitute.substring(0, 4).toUpperCase()}-${timestamp}-${random}`;
         }
 
+        // Ensure roll number is unique (return 409 instead of generic 500).
+        const existingRoll = await client.query(
+            'SELECT id FROM students WHERE roll_number = $1 LIMIT 1',
+            [finalRollNumber]
+        );
+
+        if (existingRoll.rows.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                success: false,
+                message: 'Student with this roll number already exists'
+            });
+        }
+
+        // Some deployments still have firebase_uid as NOT NULL in students.
+        const manualUid = `manual_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+
         // Insert new student (without firebase_uid - manual creation)
         const result = await client.query(
-            `INSERT INTO students (full_name, email, roll_number, institute, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, NOW(), NOW())
+            `INSERT INTO students (firebase_uid, full_name, email, roll_number, institute, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
              RETURNING id, full_name, email, roll_number, institute, created_at`,
-            [full_name, email, finalRollNumber, normalizedInstitute]
+            [manualUid, full_name, email, finalRollNumber, canonicalInstitute]
         );
 
         const newStudent = result.rows[0];
