@@ -1,12 +1,59 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-// pdf-parse v2.x compatibility: handle both default export styles
-const pdfParseModule = require('pdf-parse');
-const pdfParse = typeof pdfParseModule === 'function' ? pdfParseModule : (typeof pdfParseModule.default === 'function' ? pdfParseModule.default : null);
 const axios = require('axios');
-// Aap agar is route par authentication lagana chahein to verifyToken use kar sakte hain
-// const verifyToken = require('../middleware/verifyToken');
+const db = require('../config/db');
+
+// PDF text extractor — pdf-parse@1.1.1 exports a simple async function
+async function extractPdfText(buffer) {
+    // Attempt 1: pdf-parse v1.1.1 (standard well-known package)
+    try {
+        const pdfParse = require('pdf-parse');
+        const data = await pdfParse(buffer);
+        const text = data && data.text ? data.text.trim() : '';
+        if (text.length > 20) {
+            console.log('✅ PDF parsed via pdf-parse, chars:', text.length);
+            return text;
+        }
+    } catch (e) {
+        console.warn('pdf-parse failed:', e.message);
+    }
+
+    // Attempt 2: zlib decompress PDF FlateDecode streams (fallback)
+    try {
+        const zlib = require('zlib');
+        const { promisify } = require('util');
+        const inflate = promisify(zlib.inflate);
+        const inflateRaw = promisify(zlib.inflateRaw);
+        const hex = buffer.toString('binary');
+        const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+        let match;
+        let allText = '';
+        while ((match = streamRegex.exec(hex)) !== null) {
+            const raw = Buffer.from(match[1], 'binary');
+            for (const decompress of [inflate, inflateRaw]) {
+                try {
+                    const out = await decompress(raw);
+                    const readable = out.toString('utf8').match(/[\x20-\x7E\n]{3,}/g) || [];
+                    allText += readable.join(' ') + ' ';
+                    break;
+                } catch (_) {}
+            }
+        }
+        const plain = hex.match(/\(([^\)\\]{3,})\)/g) || [];
+        plain.forEach(m => { allText += m.slice(1, -1) + ' '; });
+        const cleaned = allText.replace(/\s+/g, ' ').trim();
+        if (cleaned.length > 80) {
+            console.log('✅ PDF extracted via zlib fallback, chars:', cleaned.length);
+            return cleaned;
+        }
+    } catch (e) {
+        console.warn('Zlib extraction failed:', e.message);
+    }
+
+    console.error('❌ All PDF extraction methods failed.');
+    return null;
+}
 
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -26,48 +73,52 @@ router.post('/upload-resume', upload.single('resume'), async (req, res) => {
             return res.status(400).json({ success: false, message: 'No resume file uploaded' });
         }
 
-        console.log('--- AI Interview: Starting Upload ---');
-        let resumeText = '';
+        console.log('--- AI Interview: Parsing Resume ---');
 
-        // Try extracting PDF text
-        try {
-            if (!pdfParse) {
-                // Fallback: if pdf-parse module couldn't load properly, try raw text extraction
-                console.warn('pdf-parse not available as function, using raw buffer text');
-                resumeText = req.file.buffer.toString('utf-8');
-            } else {
-                const data = await pdfParse(req.file.buffer);
-                resumeText = data.text;
-            }
-        } catch (pdfErr) {
-            console.error('Error parsing PDF:', pdfErr);
-            return res.status(400).json({ success: false, message: 'Aapne jo file upload ki hai wo PDF nahi hai, ya parse nahi ho pa rahi.' });
+        // Use robust extractor
+        const rawText = await extractPdfText(req.file.buffer);
+
+        if (!rawText || rawText.length < 30) {
+            return res.status(400).json({
+                success: false,
+                message: 'Resume PDF se text extract nahi ho pa raha. Kripya ek text-based PDF upload karein (Word se export ki hui PDF best hoti hai).'
+            });
         }
 
-        // Limit resume text heavily to ensure very fast first-response (Llama won't stall reading it)
-        const contextText = resumeText.substring(0, 800);
+        // Clean up: remove control chars, collapse spaces
+        const cleanText = rawText
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
 
-        const systemPrompt = `You are a friendly, basic technical interviewer for a BEGINNER.
-Candidate's Resume extract: "${contextText}"
+        // Take first 1000 chars — enough context, keeps AI fast
+        const contextText = cleanText.substring(0, 1000);
+        console.log('Resume extracted, length:', contextText.length, '| Preview:', contextText.substring(0, 100));
 
-RULES:
-1. Speak naturally. Do NOT write transcripts or "Interviewer:".
-2. Ask EXTREMELY SIMPLE, short, basic questions about the skills mentioned in the resume. 
-3. Stop after exactly ONE question.`;
+        // Tight, directive system prompt — forces resume-specific questions
+        const systemPrompt = `You are a technical interviewer. Here is the candidate's resume:
 
-        // Hardcoded instant greeting to bypass AI processing time during upload
-        const greeting = "Hello! I am your AI interviewer. I have successfully analyzed your resume. Please type or say 'Yes' when you are ready for your first question.";
+"${contextText}"
 
-        // Send prompt back to client so client manages the state
+RULES (strictly follow):
+1. Ask ONE short simple technical question DIRECTLY based on something in this resume (skills, projects, technologies listed).
+2. Never acknowledge answers — just ask the next question immediately.
+3. Do NOT say "Good", "Great", "Nice answer". Just ask the next question.
+4. Keep every question under 20 words.
+5. Do NOT write "Interviewer:", scripts, or meta-text.`;
+
+        const greeting = "Hello! I have read your resume. Let's begin the interview. Please say 'Ready' or press Enter to start.";
+
         res.json({
             success: true,
             systemPrompt: systemPrompt,
-            message: greeting
+            message: greeting,
+            resumeText: contextText
         });
 
     } catch (error) {
-        console.error('AI Interview Upload Error:', error?.response?.data || error.message);
-        res.status(500).json({ success: false, message: 'Failed to process resume or connect to Ollama', error: error.message });
+        console.error('AI Interview Upload Error:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to process resume', error: error.message });
     }
 });
 
@@ -83,47 +134,88 @@ router.post('/chat', async (req, res) => {
         }
 
         console.log(`--- AI Interview: Received Answer ---`);
-        
-        // Append user's answer ALONG WITH the reminder to the AI
+
+        // Use the full askedQuestions list from frontend (never trimmed, always complete)
+        const askedFromFrontend = Array.isArray(req.body.askedQuestions) ? req.body.askedQuestions : [];
+
+        // Fallback: also extract from current history in case frontend list is empty
+        const askedFromHistory = messages
+            .filter(m => m.role === 'assistant' && m.content)
+            .map(m => {
+                const match = m.content.match(/^[^?]*\?/);
+                return match ? match[0].trim() : m.content.substring(0, 80).trim();
+            })
+            .filter(q => q.length > 5);
+
+        // Merge both (deduplicated), frontend list takes priority
+        const allAsked = [...new Set([...askedFromFrontend, ...askedFromHistory])];
+
+        const avoidList = allAsked.length > 0
+            ? `\nAlready asked (DO NOT repeat or rephrase): ${allAsked.map(q => `"${q.substring(0, 40)}"`).join(' | ')}`
+            : '';
+
+        // Extract resume keywords from system prompt (messages[0]) for reminder
+        const systemContent = messages[0]?.content || '';
+        const resumeMatch = systemContent.match(/"([^"]{30,})"/);
+        const resumeHint = resumeMatch 
+            ? `\nCandidate resume snippet: "${resumeMatch[1].substring(0, 200)}"`
+            : '';
+
+        console.log(`Preventing repetition of ${allAsked.length} questions.`);
+
+        // Strict injection — ONE resume-specific question, never repeat
         messages.push({ 
             role: 'user', 
-            content: `Candidate's answer: "${answer}"\n\n(Interviewer Note: Acknowledge this answer briefly, then proceed to the next simple technical question based on their skills. Keep it friendly and beginner-level. Do NOT write a script.)` 
+            content: `${answer}\n\n[INSTRUCTION: Ask ONE new short technical question specifically about a skill, project, or technology mentioned in the candidate's resume. End with "?". Do not say anything else.${resumeHint}${avoidList}]` 
         });
 
-        console.log('Sending chat context to Ollama...');
+        console.log('Sending to Ollama...');
         const ollamaResponse = await axios.post(OLLAMA_URL, {
             model: MODEL_NAME,
             messages: messages,
             stream: false,
             options: {
-                num_predict: 60, // Very short for speed
-                num_ctx: 1024,
-                temperature: 0.3,
-                top_p: 0.2
+                num_predict: 40,
+                num_ctx: 1536,      // Larger context — resume system prompt always visible
+                temperature: 0.1,
+                top_p: 0.1,
+                repeat_penalty: 1.3,
+                stop: ['?\n', '?\r']
             }
         });
 
         const reply = ollamaResponse.data.message;
-        // Clean up any leaked internal Llama tags like <|start_header_id|>
         if (reply && reply.content) {
-            reply.content = reply.content.replace(/<\|.*?\|>/g, '').trim();
-            // Optional: Strip "Interviewer:" or "AI:" prefixes if it still tries to write a script
-            reply.content = reply.content.replace(/^(Interviewer:|AI Interviewer:|AI:|Interviewer \s*-)/i, '').trim();
-        }
-        console.log('Ollama chat reply received.');
+            // Step 1: clean tags and prefixes
+            let cleaned = reply.content
+                .replace(/<\|.*?\|>/g, '')
+                .replace(/^(Interviewer:|AI Interviewer:|AI:|Q:|Question:|\d+\.)/i, '')
+                .replace(/\[INSTRUCTION.*?\]/gi, '')
+                .trim();
 
-        // Since we combined user answer and instruction for Ollama, we can just save it as the user's answer in our local history
-        // to keep the history clean for future requests
-        messages.pop(); // Remove the "instruction-injected" user message
-        messages.push({ role: 'user', content: answer }); // Add clean user message
+            // Step 2: Keep ONLY the first question (everything up to and including the first "?")
+            const firstQMatch = cleaned.match(/^[^?]*\?/);
+            if (firstQMatch) {
+                cleaned = firstQMatch[0].trim();
+            } else {
+                // No "?" found — take only the first sentence
+                const firstSentence = cleaned.split(/[.!\n]/)[0];
+                cleaned = (firstSentence || cleaned).trim();
+            }
+
+            reply.content = cleaned;
+        }
+        console.log('Ollama reply (single Q):', reply?.content);
+
+        // Clean history: remove injected instruction, keep clean answer
+        messages.pop();
+        messages.push({ role: 'user', content: answer });
         messages.push(reply);
 
-        // Memory cleanup to prevent large payload over network
+        // Trim history to stay fast (keep last 8 messages + system prompt)
         let updatedHistory = messages;
-        if (messages.length > 12) {
-            const systemPromptMeta = messages[0];
-            const recent = messages.slice(-10); // Keep last 10
-            updatedHistory = [systemPromptMeta, ...recent];
+        if (messages.length > 10) {
+            updatedHistory = [messages[0], ...messages.slice(-8)];
         }
 
         res.json({
@@ -135,6 +227,69 @@ router.post('/chat', async (req, res) => {
     } catch (error) {
         console.error('AI Interview Chat Error:', error?.response?.data || error.message);
         res.status(500).json({ success: false, message: 'Failed to get AI response' });
+    }
+});
+
+// ============================================
+// SAVE interview result to DB
+// ============================================
+router.post('/save', async (req, res) => {
+    try {
+        const { studentId, studentName, resumeText, chatHistory, rating, feedbackComment } = req.body;
+
+        if (!chatHistory) {
+            return res.status(400).json({ success: false, message: 'Chat history missing.' });
+        }
+
+        const result = await db.query(
+            `INSERT INTO ai_interviews 
+             (student_id, student_name, resume_text, chat_history, rating, feedback_comment)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id`,
+            [studentId, studentName, resumeText, JSON.stringify(chatHistory), rating, feedbackComment]
+        );
+
+        console.log(`✅ AI Interview saved for student ${studentName}, id: ${result.rows[0].id}`);
+        res.json({ success: true, id: result.rows[0].id });
+
+    } catch (error) {
+        console.error('AI Interview Save Error:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to save interview result.' });
+    }
+});
+
+// ============================================
+// GET all interview results (Admin only)
+// ============================================
+router.get('/results', async (req, res) => {
+    try {
+        const result = await db.query(
+            `SELECT id, student_id, student_name, rating, feedback_comment, created_at
+             FROM ai_interviews
+             ORDER BY created_at DESC`
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('AI Interview Results Error:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to fetch results.' });
+    }
+});
+
+// GET single interview detail (Admin only)
+router.get('/results/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await db.query(
+            `SELECT * FROM ai_interviews WHERE id = $1`,
+            [id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Interview not found.' });
+        }
+        res.json({ success: true, data: result.rows[0] });
+    } catch (error) {
+        console.error('AI Interview Detail Error:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to fetch interview detail.' });
     }
 });
 
