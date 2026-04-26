@@ -1,10 +1,6 @@
 const { pool } = require('../config/db');
 const { logger } = require('../config/logger');
 
-/**
- * Cleanup old student messages and feedback older than 15 days
- * This job should run daily
- */
 async function cleanupOldMessages() {
   const client = await pool.connect();
   
