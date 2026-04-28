@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const axios = require('axios');
 const db = require('../config/db');
+const PDFDocument = require('pdfkit');
 
 const PDF_OPERATOR_PATTERN = /\b(BT|ET|BDC|EMC|Tf|Tm|Td|TJ|Tj|Do|cm|q|Q|re|w|J|j|d|RG|rg|K|k|gs|m|l|c|h|S|s|f|F|B|b|n|W|BI|ID|EI|obj|endobj|stream|endstream|xref|trailer|startxref)\b/g;
 const PDF_METADATA_PATTERN = /D:\d{10,}\+00'00'|ReportLab PDF Library|endobj|endstream|startxref|%%EOF|\/Type\s*\/|\bxref\b|\bobj\b\s+\bstream\b|<[0-9a-f]{8,}>/i;
@@ -23,7 +24,82 @@ const isLowQualityResumeText = (text = '') => {
     if (tokens.length === 0) return true;
     const alphaWords = tokens.filter((token) => /[A-Za-z]{3,}/.test(token)).length;
     const operatorHits = (text.match(PDF_OPERATOR_PATTERN) || []).length;
-    return alphaWords / Math.max(1, tokens.length) < 0.45 || operatorHits / Math.max(1, tokens.length) > 0.08;
+    return alphaWords / Math.max(1, tokens.length) < 0.28 || operatorHits / Math.max(1, tokens.length) > 0.12;
+};
+
+const hasUsableResumeContent = (text = '') => {
+    const tokens = String(text || '').split(/\s+/).filter(Boolean);
+    if (tokens.length < 12) return false;
+    const alphaWords = tokens.filter((token) => /[A-Za-z]{2,}/.test(token)).length;
+    return alphaWords >= 8;
+};
+
+const formatReportDate = (value) => {
+    if (!value) return '-';
+    return new Date(value).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+};
+
+const ensurePdfSpace = (doc, neededHeight = 24) => {
+    if (doc.y + neededHeight <= doc.page.height - 50) return;
+    doc.addPage();
+};
+
+const writePdfLabelValue = (doc, label, value) => {
+    const x = doc.x;
+    const y = doc.y;
+    const width = 120;
+    const height = 42;
+
+    doc.roundedRect(x, y, width, height, 8).fillAndStroke('#eef0fb', '#eef0fb');
+    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(8).text(label.toUpperCase(), x + 10, y + 8, { width: width - 20 });
+    doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(13).text(String(value || '-'), x + 10, y + 20, { width: width - 20 });
+    doc.x = x + width + 12;
+};
+
+const writePdfSummaryRow = (doc, items = []) => {
+    const startX = 50;
+    const startY = doc.y;
+    const gap = 12;
+    const width = Math.floor((doc.page.width - 100 - (gap * (items.length - 1))) / items.length);
+    const height = 42;
+
+    items.forEach((item, index) => {
+        const x = startX + (index * (width + gap));
+        doc.roundedRect(x, startY, width, height, 8).fillAndStroke('#eef0fb', '#eef0fb');
+        doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(8).text(String(item.label || '').toUpperCase(), x + 10, startY + 8, { width: width - 20 });
+        doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(13).text(String(item.value || '-'), x + 10, startY + 20, { width: width - 20 });
+    });
+
+    doc.x = startX;
+    doc.y = startY + height + 12;
+};
+
+const writePdfSectionTitle = (doc, title) => {
+    ensurePdfSpace(doc, 28);
+    doc.moveDown(0.5);
+    doc.fillColor('#5b5ba8').font('Helvetica-Bold').fontSize(13).text(title);
+    doc.moveDown(0.25);
+    doc.strokeColor('#e2e8f0').lineWidth(1).moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).stroke();
+    doc.moveDown(0.5);
+};
+
+const writePdfWrappedBlock = (doc, title, text, options = {}) => {
+    writePdfSectionTitle(doc, title);
+    doc.fillColor('#1e1e3f').font('Helvetica').fontSize(options.fontSize || 10).text(String(text || options.emptyText || '-'), {
+        width: options.width || (doc.page.width - 100),
+        lineGap: options.lineGap || 2
+    });
+};
+
+const normalizeStoredJson = (value, fallback) => {
+    if (typeof value !== 'string') return value || fallback;
+    try {
+        return JSON.parse(value);
+    } catch (_) {
+        return fallback;
+    }
 };
 
 // PDF text extractor — pdf-parse@1.1.1 exports a simple async function
@@ -85,6 +161,338 @@ const upload = multer({
 
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const MODEL_NAME = 'llama3.2:1b'; // Lightweight, fits in 1.5GB RAM but extremely smart
+const MAX_INTERVIEW_QUESTIONS = 20;
+const CORRECT_ANSWERS_PER_STAR = 4;
+const SHORTLIST_CORRECT_THRESHOLD = 15;
+
+let aiInterviewSchemaReady = false;
+
+const ensureAiInterviewSchema = async () => {
+    if (aiInterviewSchemaReady) return;
+    await db.query(`
+        ALTER TABLE ai_interviews
+        ADD COLUMN IF NOT EXISTS assessment_summary JSONB DEFAULT '{}'::jsonb,
+        ADD COLUMN IF NOT EXISTS scored_questions JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS ignored_questions JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS correct_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS total_scored_questions INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS shortlisted BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS result_status VARCHAR(40) DEFAULT 'disqualified',
+        ADD COLUMN IF NOT EXISTS proctoring_counts JSONB DEFAULT '{}'::jsonb,
+        ADD COLUMN IF NOT EXISTS proctoring_events JSONB DEFAULT '[]'::jsonb
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_interviews_shortlisted ON ai_interviews (shortlisted);`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_interviews_result_status ON ai_interviews (result_status);`);
+    aiInterviewSchemaReady = true;
+};
+
+const normalizeText = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const normalizeSkill = (skill = '') => normalizeText(skill)
+    .toLowerCase()
+    .replace(/\bfront\s*end\b/g, 'frontend')
+    .replace(/\bback\s*end\b/g, 'backend')
+    .replace(/\bnodejs\b/g, 'node.js')
+    .replace(/\bnextjs\b/g, 'next.js');
+
+const isBlockedSkill = (skill = '') => {
+    const value = normalizeSkill(skill);
+    return !value ||
+        value.length < 2 ||
+        ['r', 'pdf', 'resume', 'document', 'library', 'candidate', 'student', 'reportlab', 'frontendresume', 'backendresume'].includes(value) ||
+        /\b(resume|document|pdf|reportlab)\b/i.test(value);
+};
+
+const isTechnicalQuestion = (question = '') => {
+    const q = normalizeText(question).toLowerCase();
+    if (!q.endsWith('?')) return false;
+    const blocked = [
+        'ready', 'let us begin', 'let\'s begin', 'how are you', 'tell me about yourself',
+        'which programming language did you use to create', 'create this resume',
+        'create and manage this document', 'this document', 'resume be used as input',
+        'manipulating resumes', 'openresume', 'readthedocs', 'reportlab', 'pdf generation',
+        'syntax for creating a pdf'
+    ];
+    if (blocked.some((phrase) => q.includes(phrase))) return false;
+    const technicalSignals = [
+        'explain', 'describe', 'difference', 'how do you', 'what is', 'why', 'when would',
+        'implement', 'debug', 'optimize', 'design', 'api', 'database', 'sql', 'java',
+        'python', 'react', 'node', 'express', 'algorithm', 'data structure', 'oop',
+        'pandas', 'machine learning', 'model', 'component', 'state', 'query', 'index',
+        'authentication', 'backend', 'frontend', 'server', 'cloud', 'docker'
+    ];
+    return technicalSignals.some((signal) => q.includes(signal));
+};
+
+const tokenize = (text = '') => {
+    const stopWords = new Set([
+        'the', 'and', 'for', 'with', 'that', 'this', 'you', 'your', 'are', 'was', 'were',
+        'have', 'has', 'had', 'can', 'could', 'would', 'should', 'from', 'into', 'about',
+        'what', 'when', 'where', 'which', 'how', 'why', 'does', 'did', 'use', 'used'
+    ]);
+    return normalizeText(text)
+        .toLowerCase()
+        .match(/[a-z0-9+#.]{3,}/g)?.filter((word) => !stopWords.has(word)) || [];
+};
+
+const classifyAnswer = (question = '', answer = '') => {
+    const cleanAnswer = normalizeText(answer);
+    const lowerAnswer = cleanAnswer.toLowerCase();
+    if (!cleanAnswer || cleanAnswer.length < 3) {
+        return { verdict: 'incorrect', score: 0, correct: false, reason: 'No meaningful answer was provided.' };
+    }
+    if (/\b(don'?t know|no idea|not sure|none|nothing|skip|pass)\b/i.test(lowerAnswer)) {
+        return { verdict: 'incorrect', score: 0, correct: false, reason: 'The student did not provide a technical answer.' };
+    }
+
+    const questionTokens = tokenize(question);
+    const answerTokens = tokenize(answer);
+    const answerSet = new Set(answerTokens);
+    const overlap = questionTokens.filter((token) => answerSet.has(token)).length;
+    const lengthScore = cleanAnswer.length >= 160 ? 2 : cleanAnswer.length >= 80 ? 1 : 0;
+    const conceptScore = overlap >= 3 ? 2 : overlap >= 1 ? 1 : 0;
+    const explanationScore = /\b(because|for example|such as|means|used to|helps|works|handles|prevents|improves|ensures)\b/i.test(lowerAnswer) ? 1 : 0;
+    const score = Math.min(5, lengthScore + conceptScore + explanationScore);
+
+    if (score >= 4) {
+        return { verdict: 'correct', score, correct: true, reason: 'The answer is relevant and includes useful technical explanation.' };
+    }
+    if (score >= 2) {
+        return { verdict: 'partially_correct', score, correct: false, reason: 'The answer is related but lacks enough detail or precision.' };
+    }
+    return { verdict: 'incorrect', score, correct: false, reason: 'The answer is too short, vague, or not technically relevant.' };
+};
+
+const buildViolationSummary = (proctoringCounts = {}, proctoringEvents = []) => {
+    const counts = {
+        multipleFaces: Number(proctoringCounts.multipleFaces || 0),
+        noFace: Number(proctoringCounts.noFace || 0),
+        phoneDetected: Number(proctoringCounts.phoneDetected || 0),
+        objectDetected: Number(proctoringCounts.objectDetected || 0),
+        voiceDetected: Number(proctoringCounts.voiceDetected || 0),
+        tabSwitch: Number(proctoringCounts.tabSwitch || 0),
+        responseTimeout: Number(proctoringCounts.responseTimeout || 0),
+    };
+    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+    const events = Array.isArray(proctoringEvents) ? proctoringEvents.slice(0, 200) : [];
+    return { counts, total, events };
+};
+
+const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringCounts = {}, proctoringEvents = []) => {
+    const normalized = Array.isArray(chatHistory) ? chatHistory : [];
+    const scoredQuestions = [];
+    const ignoredQuestions = [];
+    let pendingQuestion = null;
+
+    normalized.forEach((message) => {
+        const role = message?.role === 'ai' ? 'assistant' : message?.role;
+        const content = normalizeText(message?.content);
+        if (!content) return;
+
+        if (role === 'assistant') {
+            if (isTechnicalQuestion(content)) {
+                pendingQuestion = content;
+            } else {
+                ignoredQuestions.push({ question: content, reason: 'Greeting, setup, resume/document question, or non-technical prompt.' });
+                pendingQuestion = null;
+            }
+            return;
+        }
+
+        if (role === 'user' && pendingQuestion) {
+            const assessment = classifyAnswer(pendingQuestion, content);
+            scoredQuestions.push({
+                number: scoredQuestions.length + 1,
+                question: pendingQuestion,
+                answer: content,
+                verdict: assessment.verdict,
+                score: assessment.score,
+                correct: assessment.correct,
+                reason: assessment.reason
+            });
+            pendingQuestion = null;
+        }
+    });
+
+    const limitedScored = scoredQuestions.slice(0, MAX_INTERVIEW_QUESTIONS);
+    const correctCount = limitedScored.filter((item) => item.correct).length;
+    const rating = Math.max(0, Math.min(5, Math.ceil(correctCount / CORRECT_ANSWERS_PER_STAR)));
+    const shortlisted = correctCount >= SHORTLIST_CORRECT_THRESHOLD;
+
+    const verdictCounts = limitedScored.reduce((acc, item) => {
+        acc[item.verdict] = (acc[item.verdict] || 0) + 1;
+        return acc;
+    }, {});
+
+    const skills = extractSkillsFromResume(resumeText).filter((skill) => !isBlockedSkill(skill)).slice(0, 8);
+    const violationSummary = buildViolationSummary(proctoringCounts, proctoringEvents);
+    const weakAreas = limitedScored
+        .filter((item) => item.verdict !== 'correct')
+        .slice(0, 5)
+        .map((item) => item.question);
+
+    const summaryText = [
+        `The AI interview scored ${correctCount} correct answer${correctCount === 1 ? '' : 's'} out of ${limitedScored.length} technical question${limitedScored.length === 1 ? '' : 's'}.`,
+        `Rating is ${rating}/5 using 4 correct answers per star.`,
+        shortlisted
+            ? 'The student is auto-shortlisted for admin interview scheduling.'
+            : `The student is not auto-shortlisted because the threshold is ${SHORTLIST_CORRECT_THRESHOLD}/${MAX_INTERVIEW_QUESTIONS}.`,
+        skills.length > 0 ? `Main resume topics detected: ${skills.join(', ')}.` : 'No clear resume skill list was detected.',
+        weakAreas.length > 0 ? `Needs review on: ${weakAreas.join(' | ')}` : 'Most scored answers were relevant.',
+        violationSummary.total > 0
+            ? `Proctoring recorded ${violationSummary.total} issue(s): no face ${violationSummary.counts.noFace}, multiple faces ${violationSummary.counts.multipleFaces}, phone ${violationSummary.counts.phoneDetected}, object ${violationSummary.counts.objectDetected}, voice/noise ${violationSummary.counts.voiceDetected}, tab switch ${violationSummary.counts.tabSwitch}, timeout ${violationSummary.counts.responseTimeout}.`
+            : 'No AI interview proctoring issues were recorded.'
+    ].join(' ');
+
+    return {
+        scoredQuestions: limitedScored,
+        ignoredQuestions,
+        correctCount,
+        totalScoredQuestions: limitedScored.length,
+        rating,
+        shortlisted,
+        resultStatus: shortlisted ? 'auto_shortlisted' : 'disqualified',
+        summary: {
+            text: summaryText,
+            maxQuestions: MAX_INTERVIEW_QUESTIONS,
+            correctAnswersPerStar: CORRECT_ANSWERS_PER_STAR,
+            shortlistThreshold: SHORTLIST_CORRECT_THRESHOLD,
+            verdictCounts,
+            skills,
+            weakAreas,
+            violations: violationSummary
+        }
+    };
+};
+
+const questionTemplates = {
+    python: [
+        'In your resume project, how would you structure Python modules to keep the code maintainable?',
+        'How would you debug a slow Python API or script used in one of your projects?',
+        'Explain a Python decision from your project where you handled errors or edge cases.',
+        'How would you test the important Python functions in your resume project?'
+    ],
+    javascript: [
+        'In your project, how did you manage asynchronous JavaScript operations and possible failures?',
+        'How would you prevent duplicate API calls or race conditions in your JavaScript code?',
+        'Explain how your JavaScript code handles state changes after a user action.',
+        'How would you debug a browser issue where JavaScript works locally but fails in production?'
+    ],
+    react: [
+        'In your React project, how did you split components to avoid unnecessary re-renders?',
+        'How would you manage form state and validation in the React screen from your resume?',
+        'Explain how you handled API loading, success, and error states in your React project.',
+        'How would you make one React component reusable without making it too generic?'
+    ],
+    frontend: [
+        'In your frontend work, how would you make a complex page responsive without layout breaks?',
+        'How did you handle API errors and loading states in your frontend project?',
+        'Explain how you would improve accessibility for one screen from your frontend project.',
+        'How would you optimize a frontend page that becomes slow after many records load?'
+    ],
+    backend: [
+        'In your backend project, how did you validate inputs before saving data?',
+        'How would you design error handling for an API used by your frontend project?',
+        'Explain how you would protect one backend route from unauthorized access.',
+        'How would you debug an API that works sometimes but fails under load?'
+    ],
+    'node.js': [
+        'In your Node.js project, how did you organize routes, services, and database logic?',
+        'How would you handle async errors in an Express API without crashing the server?',
+        'Explain how you would secure a Node.js endpoint that updates important records.',
+        'How would you improve performance for a slow Node.js API route?'
+    ],
+    express: [
+        'In your Express project, how did you structure middleware for authentication and validation?',
+        'How would you handle one failed database query inside an Express route?',
+        'Explain how you would design REST endpoints for a feature from your resume.',
+        'How would you prevent invalid requests from reaching your Express business logic?'
+    ],
+    sql: [
+        'In your project database, how would you choose indexes for frequently used queries?',
+        'How would you prevent duplicate records while multiple users submit data together?',
+        'Explain how you would design tables for one feature mentioned in your resume.',
+        'How would you debug a SQL query that becomes slow with more data?'
+    ],
+    bootstrap: [
+        'In your Bootstrap work, how did you customize responsive layouts beyond default classes?',
+        'How would you fix a Bootstrap layout that breaks between tablet and desktop widths?',
+        'Explain how you would keep Bootstrap styling consistent across multiple pages.',
+        'How would you combine Bootstrap utilities with custom CSS without conflicts?'
+    ]
+};
+
+const genericTemplates = [
+    'Choose one resume project and explain a technical challenge you solved end to end.',
+    'How would you improve performance, security, or reliability in one project from your resume?',
+    'Explain one bug you might face in your resume project and how you would isolate it.',
+    'Describe one design decision from your resume project and the tradeoff behind it.'
+];
+
+const generateFocusedQuestion = (skill = '', askedQuestions = []) => {
+    const normalizedSkill = normalizeSkill(skill);
+    const bank = questionTemplates[normalizedSkill] || genericTemplates.map((template) => {
+        if (!normalizedSkill || isBlockedSkill(normalizedSkill)) return template;
+        return template.replace('resume project', `${normalizedSkill} project`);
+    });
+    const askedSet = new Set((askedQuestions || []).map((q) => normalizeText(q).toLowerCase()));
+    return bank.find((question) => !askedSet.has(question.toLowerCase())) || null;
+};
+
+const recomputeInterviewRowIfNeeded = async (interview) => {
+    if (!interview) return interview;
+    const chatHistory = Array.isArray(interview.chat_history) ? interview.chat_history : [];
+    const existingSummary = `${interview.assessment_summary?.text || ''} ${interview.feedback_comment || ''}`;
+    const needsRecompute =
+        !interview.assessment_summary?.text ||
+        Number(interview.total_scored_questions || 0) === 0 ||
+        /reportlab|pdf generation|syntax for creating a pdf/i.test(existingSummary);
+    if (!needsRecompute || chatHistory.length === 0) return interview;
+
+    const assessment = buildInterviewAssessment(
+        chatHistory,
+        interview.resume_text || '',
+        interview.proctoring_counts || {},
+        interview.proctoring_events || []
+    );
+    await db.query(
+        `UPDATE ai_interviews
+         SET rating = $1,
+             feedback_comment = $2,
+             assessment_summary = $3::jsonb,
+             scored_questions = $4::jsonb,
+             ignored_questions = $5::jsonb,
+             correct_count = $6,
+             total_scored_questions = $7,
+             shortlisted = $8,
+             result_status = $9
+         WHERE id = $10`,
+        [
+            assessment.rating,
+            assessment.summary.text,
+            JSON.stringify(assessment.summary),
+            JSON.stringify(assessment.scoredQuestions),
+            JSON.stringify(assessment.ignoredQuestions),
+            assessment.correctCount,
+            assessment.totalScoredQuestions,
+            assessment.shortlisted,
+            assessment.resultStatus,
+            interview.id
+        ]
+    );
+    return {
+        ...interview,
+        rating: assessment.rating,
+        feedback_comment: assessment.summary.text,
+        assessment_summary: assessment.summary,
+        scored_questions: assessment.scoredQuestions,
+        ignored_questions: assessment.ignoredQuestions,
+        correct_count: assessment.correctCount,
+        total_scored_questions: assessment.totalScoredQuestions,
+        shortlisted: assessment.shortlisted,
+        result_status: assessment.resultStatus
+    };
+};
 
 // Removed In-memory session store. Backend is now 100% STATELESS and immune to server restarts!
 // chatSessions map is no longer needed. History is managed by the client.
@@ -162,7 +570,7 @@ function extractSkillsFromResume(text = '') {
 
     const found = [];
     for (const [skill, pattern] of skillPatterns) {
-        if (pattern.test(lowerText)) {
+        if (pattern.test(lowerText) && !isBlockedSkill(skill)) {
             found.push(skill);
         }
     }
@@ -174,13 +582,14 @@ function extractSkillsFromResume(text = '') {
         const terms = headingMatch[1]
             .split(/[,|;/•]+/)
             .map((term) => term.trim())
-            .filter((term) => /^[a-z0-9 .+#-]{2,30}$/i.test(term));
+            .filter((term) => /^[a-z0-9 .+#-]{2,30}$/i.test(term))
+            .filter((term) => !isBlockedSkill(term));
         if (terms.length > 0) return [...new Set(terms)].slice(0, 10);
     }
 
     const caps = normalizedText.match(/\b[A-Z][a-zA-Z0-9+#.-]{2,}\b/g) || [];
-    const ignored = new Set(['The', 'And', 'For', 'With', 'From', 'This', 'That', 'Your', 'Our', 'ReportLab', 'PDF', 'Library']);
-    const unique = [...new Set(caps.filter((word) => !ignored.has(word)))];
+    const ignored = new Set(['The', 'And', 'For', 'With', 'From', 'This', 'That', 'Your', 'Our', 'ReportLab', 'PDF', 'Library', 'Resume']);
+    const unique = [...new Set(caps.filter((word) => !ignored.has(word) && !isBlockedSkill(word)))];
     return unique.slice(0, 8);
 }
 
@@ -210,7 +619,7 @@ router.post('/upload-resume', upload.single('resume'), async (req, res) => {
         }
 
         const cleanText = sanitizeResumeText(resumeSourceText);
-        if (rawText && isLowQualityResumeText(cleanText)) {
+        if (rawText && isLowQualityResumeText(cleanText) && !hasUsableResumeContent(cleanText)) {
             return res.status(400).json({
                 success: false,
                 message: 'Resume text extraction quality is low. Please upload a clean text-based PDF resume (not a scanned image).'
@@ -232,10 +641,11 @@ CANDIDATE RESUME DATA:
 STRICT INTERVIEW PROTOCOL:
 1. Ask EXACTLY ONE short technical question.
 2. The question MUST be directly derived from a skill, tool, project, or experience listed in the resume above.
-3. NEVER ask about PDF libraries, PDF metadata, ReportLab, or "R" unless the resume explicitly says R programming.
+3. NEVER ask about PDF libraries, PDF metadata, ReportLab, resumes, documents, or "R" unless the resume explicitly says R programming.
 4. NEVER ask general HR questions.
 5. NEVER repeat or rephrase a previous question.
-6. Output only the question text. End with "?". Maximum 15 words.`;
+6. Ask applied technical questions that can be judged for correctness.
+7. Output only the question text. End with "?". Maximum 18 words.`;
 
         const greeting = "Hello! I have read your resume. Let's begin. Say 'Ready' to start.";
 
@@ -276,9 +686,29 @@ router.post('/chat', async (req, res) => {
             })
             .filter((q) => q.length > 5);
         const allAsked = [...new Set([...askedFromFrontend, ...askedFromHistory])];
+        if (allAsked.filter(isTechnicalQuestion).length >= MAX_INTERVIEW_QUESTIONS) {
+            return res.json({
+                success: true,
+                completed: true,
+                message: 'Interview completed.',
+                updatedHistory: messages
+            });
+        }
         const avoidList = allAsked.length > 0
             ? `\nALREADY ASKED (DO NOT REPEAT): ${allAsked.map((q) => `"${q.substring(0, 50)}"`).join(' | ')}`
             : '';
+
+        const focusedQuestion = generateFocusedQuestion(currentSkill, allAsked);
+        if (focusedQuestion) {
+            messages.push({ role: 'user', content: answer });
+            messages.push({ role: 'assistant', content: focusedQuestion });
+            const updatedHistory = messages.length > 10 ? [messages[0], ...messages.slice(-8)] : messages;
+            return res.json({
+                success: true,
+                message: focusedQuestion,
+                updatedHistory
+            });
+        }
 
         // GUARANTEED RESUME-RELEVANT QUESTIONS:
         // We tell the model exactly which skill to ask about.
@@ -286,7 +716,7 @@ router.post('/chat', async (req, res) => {
         // This bypasses the model's inability to "read" the resume itself.
         messages.push({
             role: 'user',
-            content: `${answer}\n\n[STRICT INSTRUCTION: Ask exactly one NEW technical question about "${skillToAsk}" from the resume. Do not ask HR/general questions. Do not ask about ReportLab, PDF metadata, or bare "R". Do not repeat earlier questions. Output only the question ending with "?". Maximum 15 words.${avoidList}]`
+            content: `${answer}\n\n[STRICT INSTRUCTION: Ask exactly one NEW applied technical question about "${skillToAsk}" from the resume. Do not ask HR/general questions. Do not ask about ReportLab, PDF metadata, resumes, documents, or bare "R". Do not repeat earlier questions. Output only the question ending with "?". Maximum 18 words.${avoidList}]`
         });
 
         console.log(`Sending to Ollama — forcing question about: "${skillToAsk}"`);
@@ -331,7 +761,7 @@ router.post('/chat', async (req, res) => {
             }
         }
 
-        if (!finalQuestion || finalQuestion.length < 8) {
+        if (!finalQuestion || finalQuestion.length < 8 || !isTechnicalQuestion(finalQuestion)) {
             finalQuestion = `Can you describe how you have used ${skillLabel} in a project?`;
         }
 
@@ -365,7 +795,8 @@ router.post('/chat', async (req, res) => {
 // ============================================
 router.post('/save', async (req, res) => {
     try {
-        const { studentId, studentName, resumeText, chatHistory, rating, feedbackComment } = req.body;
+        await ensureAiInterviewSchema();
+        const { studentId, studentName, resumeText, chatHistory, proctoringCounts, proctoringEvents } = req.body;
 
         if (!chatHistory) {
             return res.status(400).json({ success: false, message: 'Chat history missing.' });
@@ -373,17 +804,36 @@ router.post('/save', async (req, res) => {
 
         const normalizedChatHistory = Array.isArray(chatHistory) ? chatHistory : [];
         const normalizedStudentName = (studentName || '').trim() || 'Anonymous';
+        const assessment = buildInterviewAssessment(normalizedChatHistory, resumeText || '', proctoringCounts || {}, proctoringEvents || []);
 
         const result = await db.query(
             `INSERT INTO ai_interviews 
-             (student_id, student_name, resume_text, chat_history, rating, feedback_comment)
-             VALUES ($1, $2, $3, $4, $5, $6)
+             (student_id, student_name, resume_text, chat_history, rating, feedback_comment,
+              assessment_summary, scored_questions, ignored_questions, correct_count,
+              total_scored_questions, shortlisted, result_status, proctoring_counts, proctoring_events)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15::jsonb)
              RETURNING id`,
-            [studentId || null, normalizedStudentName, resumeText || null, JSON.stringify(normalizedChatHistory), rating || null, feedbackComment || null]
+            [
+                studentId || null,
+                normalizedStudentName,
+                resumeText || null,
+                JSON.stringify(normalizedChatHistory),
+                assessment.rating,
+                assessment.summary.text,
+                JSON.stringify(assessment.summary),
+                JSON.stringify(assessment.scoredQuestions),
+                JSON.stringify(assessment.ignoredQuestions),
+                assessment.correctCount,
+                assessment.totalScoredQuestions,
+                assessment.shortlisted,
+                assessment.resultStatus,
+                JSON.stringify(proctoringCounts || {}),
+                JSON.stringify(Array.isArray(proctoringEvents) ? proctoringEvents.slice(0, 200) : [])
+            ]
         );
 
         console.log(`✅ AI Interview saved for student ${studentName}, id: ${result.rows[0].id}`);
-        res.json({ success: true, id: result.rows[0].id });
+        res.json({ success: true, id: result.rows[0].id, assessment });
 
     } catch (error) {
         console.error('AI Interview Save Error:', error.message);
@@ -396,21 +846,117 @@ router.post('/save', async (req, res) => {
 // ============================================
 router.get('/results', async (req, res) => {
     try {
+        await ensureAiInterviewSchema();
         const result = await db.query(
-            `SELECT id, student_id, student_name, rating, feedback_comment, created_at
-             FROM ai_interviews
+            `SELECT ai.id, ai.student_id, ai.student_name, ai.resume_text, ai.chat_history,
+                    ai.assessment_summary, ai.scored_questions, ai.ignored_questions,
+                    ai.rating, ai.feedback_comment, ai.correct_count,
+                    ai.total_scored_questions, ai.shortlisted, ai.result_status, ai.created_at,
+                    ai.proctoring_counts, ai.proctoring_events, s.roll_number, s.full_name, s.email, s.institute
+             FROM ai_interviews ai
+             LEFT JOIN students s ON s.id::text = ai.student_id OR s.roll_number::text = ai.student_id
              ORDER BY created_at DESC`
         );
-        res.json({ success: true, data: result.rows });
+        const data = [];
+        for (const row of result.rows) {
+            const normalized = {
+                ...row,
+                chat_history: typeof row.chat_history === 'string' ? JSON.parse(row.chat_history || '[]') : row.chat_history,
+                assessment_summary: typeof row.assessment_summary === 'string' ? JSON.parse(row.assessment_summary || '{}') : row.assessment_summary,
+                proctoring_counts: typeof row.proctoring_counts === 'string' ? JSON.parse(row.proctoring_counts || '{}') : row.proctoring_counts,
+                proctoring_events: typeof row.proctoring_events === 'string' ? JSON.parse(row.proctoring_events || '[]') : row.proctoring_events,
+            };
+            const recomputed = await recomputeInterviewRowIfNeeded(normalized);
+            data.push({
+                id: recomputed.id,
+                student_id: recomputed.student_id,
+                student_name: recomputed.student_name,
+                roll_number: recomputed.roll_number,
+                full_name: recomputed.full_name,
+                email: recomputed.email,
+                institute: recomputed.institute,
+                rating: recomputed.rating,
+                feedback_comment: recomputed.feedback_comment,
+                correct_count: recomputed.correct_count,
+                total_scored_questions: recomputed.total_scored_questions,
+                shortlisted: recomputed.shortlisted,
+                result_status: recomputed.result_status,
+                proctoring_counts: recomputed.proctoring_counts,
+                created_at: recomputed.created_at
+            });
+        }
+        res.json({ success: true, data });
     } catch (error) {
         console.error('AI Interview Results Error:', error.message);
         res.status(500).json({ success: false, message: 'Failed to fetch results.' });
     }
 });
 
+const exportAiInterviewResults = async (req, res) => {
+    try {
+        await ensureAiInterviewSchema();
+        const type = ['shortlisted', 'disqualified'].includes(req.query.type) ? req.query.type : 'all';
+        let where = '';
+        if (type === 'shortlisted') where = 'WHERE shortlisted = true';
+        if (type === 'disqualified') where = 'WHERE shortlisted = false';
+
+        const result = await db.query(
+            `SELECT ai.id, ai.student_id, ai.student_name, ai.resume_text, ai.chat_history,
+                    ai.assessment_summary, ai.scored_questions, ai.ignored_questions,
+                    ai.rating, ai.correct_count, ai.total_scored_questions,
+                    ai.shortlisted, ai.result_status, ai.feedback_comment, ai.created_at,
+                    ai.proctoring_counts, ai.proctoring_events,
+                    s.roll_number, s.full_name, s.email, s.institute
+             FROM ai_interviews ai
+             LEFT JOIN students s ON s.id::text = ai.student_id OR s.roll_number::text = ai.student_id
+             ${where}
+             ORDER BY ai.created_at DESC`
+        );
+
+        const data = [];
+        for (const row of result.rows) {
+            const normalized = {
+                ...row,
+                chat_history: typeof row.chat_history === 'string' ? JSON.parse(row.chat_history || '[]') : row.chat_history,
+                assessment_summary: typeof row.assessment_summary === 'string' ? JSON.parse(row.assessment_summary || '{}') : row.assessment_summary,
+                proctoring_counts: typeof row.proctoring_counts === 'string' ? JSON.parse(row.proctoring_counts || '{}') : row.proctoring_counts,
+                proctoring_events: typeof row.proctoring_events === 'string' ? JSON.parse(row.proctoring_events || '[]') : row.proctoring_events,
+            };
+            const recomputed = await recomputeInterviewRowIfNeeded(normalized);
+            data.push({
+                id: recomputed.id,
+                student_id: recomputed.student_id,
+                student_name: recomputed.student_name,
+                roll_number: recomputed.roll_number,
+                full_name: recomputed.full_name,
+                email: recomputed.email,
+                institute: recomputed.institute,
+                rating: recomputed.rating,
+                correct_count: recomputed.correct_count,
+                total_scored_questions: recomputed.total_scored_questions,
+                shortlisted: recomputed.shortlisted,
+                result_status: recomputed.result_status,
+                feedback_comment: recomputed.feedback_comment,
+                proctoring_counts: recomputed.proctoring_counts,
+                proctoring_events: recomputed.proctoring_events,
+                created_at: recomputed.created_at
+            });
+        }
+
+        res.json({ success: true, type, data });
+    } catch (error) {
+        console.error('AI Interview Export Error:', error.message);
+        res.status(500).json({ success: false, message: 'Failed to export interview results.' });
+    }
+};
+
+router.get('/export', exportAiInterviewResults);
+router.get('/results/export', exportAiInterviewResults);
+
 // GET single interview detail (Admin only)
 router.get('/results/:id', async (req, res) => {
     try {
+        await ensureAiInterviewSchema();
         const { id } = req.params;
         const result = await db.query(
             `SELECT * FROM ai_interviews WHERE id = $1`,
@@ -420,7 +966,7 @@ router.get('/results/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Interview not found.' });
         }
 
-        const interview = result.rows[0];
+        let interview = result.rows[0];
         // Defensive parsing for older rows where chat_history may be stored as TEXT
         if (typeof interview.chat_history === 'string') {
             try {
@@ -431,11 +977,123 @@ router.get('/results/:id', async (req, res) => {
         } else if (!Array.isArray(interview.chat_history)) {
             interview.chat_history = [];
         }
+        ['assessment_summary', 'scored_questions', 'ignored_questions'].forEach((field) => {
+            if (typeof interview[field] === 'string') {
+                try {
+                    interview[field] = JSON.parse(interview[field]);
+                } catch (_) {
+                    interview[field] = field === 'assessment_summary' ? {} : [];
+                }
+            }
+        });
+        ['proctoring_counts', 'proctoring_events'].forEach((field) => {
+            if (typeof interview[field] === 'string') {
+                try {
+                    interview[field] = JSON.parse(interview[field]);
+                } catch (_) {
+                    interview[field] = field === 'proctoring_counts' ? {} : [];
+                }
+            }
+        });
+        interview = await recomputeInterviewRowIfNeeded(interview);
 
         res.json({ success: true, data: interview });
     } catch (error) {
         console.error('AI Interview Detail Error:', error.message);
         res.status(500).json({ success: false, message: 'Failed to fetch interview detail.' });
+    }
+});
+
+router.get('/results/:id/report', async (req, res) => {
+    try {
+        await ensureAiInterviewSchema();
+        const { id } = req.params;
+        const result = await db.query(`SELECT * FROM ai_interviews WHERE id = $1`, [id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Interview not found.' });
+        }
+
+        let interview = result.rows[0];
+        interview.chat_history = normalizeStoredJson(interview.chat_history, []);
+        interview.assessment_summary = normalizeStoredJson(interview.assessment_summary, {});
+        interview.scored_questions = normalizeStoredJson(interview.scored_questions, []);
+        interview.ignored_questions = normalizeStoredJson(interview.ignored_questions, []);
+        interview.proctoring_counts = normalizeStoredJson(interview.proctoring_counts, {});
+        interview.proctoring_events = normalizeStoredJson(interview.proctoring_events, []);
+        interview = await recomputeInterviewRowIfNeeded(interview);
+
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
+        const safeName = String(interview.student_name || 'student').replace(/[^a-z0-9_-]+/gi, '_');
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="Interview_Report_${safeName}.pdf"`);
+        doc.pipe(res);
+
+        doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(24).text(`Interview Detail - ${interview.student_name || 'Anonymous'}`);
+        doc.moveDown(0.2);
+        doc.fillColor('#64748b').font('Helvetica').fontSize(10).text(formatReportDate(interview.created_at));
+        doc.moveDown(0.6);
+
+        writePdfSummaryRow(doc, [
+            { label: 'Student ID', value: interview.student_id || '-' },
+            { label: 'Rating', value: `${interview.rating || 0}/5` },
+            { label: 'Score', value: `${interview.correct_count || 0}/${interview.total_scored_questions || 0}` },
+            { label: 'Decision', value: interview.shortlisted ? 'Shortlisted' : 'Disqualified' }
+        ]);
+
+        writePdfWrappedBlock(
+            doc,
+            'Interview Summary',
+            interview.assessment_summary?.text || interview.feedback_comment || 'Summary not available.'
+        );
+
+        writePdfSectionTitle(doc, 'Scored Technical Questions');
+        if (Array.isArray(interview.scored_questions) && interview.scored_questions.length > 0) {
+            interview.scored_questions.forEach((item) => {
+                ensurePdfSpace(doc, 78);
+                const top = doc.y;
+                const boxWidth = doc.page.width - 100;
+                doc.roundedRect(50, top, boxWidth, 64, 8).stroke('#e2e8f0');
+                doc.fillColor('#5b5ba8').font('Helvetica-Bold').fontSize(10).text(`Q${item.number || ''}`, 62, top + 10);
+                doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(10).text(String(item.question || '-'), 62, top + 24, { width: boxWidth - 24 });
+                doc.fillColor('#64748b').font('Helvetica').fontSize(9).text(String(item.reason || '-'), 62, top + 42, { width: boxWidth - 24 });
+                doc.y = top + 74;
+            });
+        } else {
+            doc.fillColor('#64748b').font('Helvetica').fontSize(10).text('No scored technical questions available.');
+        }
+
+        writePdfSectionTitle(doc, 'Interview Transcript');
+        const transcript = (Array.isArray(interview.chat_history) ? interview.chat_history : []).filter((msg) => {
+            const role = msg?.role === 'assistant' ? 'ai' : msg?.role;
+            return role === 'ai' || role === 'user';
+        });
+        if (transcript.length > 0) {
+            transcript.forEach((msg) => {
+                const role = msg?.role === 'assistant' || msg?.role === 'ai' ? 'AI' : 'Student';
+                ensurePdfSpace(doc, 34);
+                doc.fillColor('#5b5ba8').font('Helvetica-Bold').fontSize(9).text(role);
+                doc.fillColor('#1e1e3f').font('Helvetica').fontSize(10).text(String(msg?.content || '-'), { width: doc.page.width - 100, lineGap: 2 });
+                doc.moveDown(0.4);
+            });
+        } else {
+            doc.fillColor('#64748b').font('Helvetica').fontSize(10).text('No transcript available.');
+        }
+
+        writePdfWrappedBlock(doc, 'Resume Text', interview.resume_text || 'Resume text not captured.', { fontSize: 9, lineGap: 1.5 });
+
+        const counts = interview.proctoring_counts || {};
+        writePdfWrappedBlock(
+            doc,
+            'AI Interview Violations',
+            `No face: ${counts.noFace || 0} | Multiple faces: ${counts.multipleFaces || 0} | Phone: ${counts.phoneDetected || 0} | Object: ${counts.objectDetected || 0} | Voice/noise: ${counts.voiceDetected || 0} | Tab switch: ${counts.tabSwitch || 0} | Timeout: ${counts.responseTimeout || 0}`
+        );
+
+        doc.end();
+    } catch (error) {
+        console.error('AI Interview PDF Report Error:', error.message);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Failed to generate report PDF.' });
+        }
     }
 });
 
