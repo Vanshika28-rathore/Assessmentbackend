@@ -112,7 +112,9 @@ router.put('/', verifyAdmin, async (req, res) => {
         if (result.rows.length === 0) {
             // Need to insert if missing
             const insertResult = await pool.query(
-                `INSERT INTO system_settings (id, retry_timer_minutes, maintenance_mode, maintenance_message, default_test_job_role, default_test_job_description) 
+                `INSERT INTO system_settings (
+                    id, retry_timer_minutes, maintenance_mode, maintenance_message, default_test_job_role, default_test_job_description
+                 ) 
                  VALUES (1, $1, $2, $3, $4, $5) RETURNING *`,
                 [retry_timer_minutes, maintenance_mode, maintenance_message, normalizedDefaultJobRole, normalizedDefaultJobDescription]
             );

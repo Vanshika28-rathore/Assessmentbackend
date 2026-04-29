@@ -46,18 +46,6 @@ const ensurePdfSpace = (doc, neededHeight = 24) => {
     doc.addPage();
 };
 
-const writePdfLabelValue = (doc, label, value) => {
-    const x = doc.x;
-    const y = doc.y;
-    const width = 120;
-    const height = 42;
-
-    doc.roundedRect(x, y, width, height, 8).fillAndStroke('#eef0fb', '#eef0fb');
-    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(8).text(label.toUpperCase(), x + 10, y + 8, { width: width - 20 });
-    doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(13).text(String(value || '-'), x + 10, y + 20, { width: width - 20 });
-    doc.x = x + width + 12;
-};
-
 const writePdfSummaryRow = (doc, items = []) => {
     const startX = 50;
     const startY = doc.y;
@@ -101,6 +89,16 @@ const normalizeStoredJson = (value, fallback) => {
         return fallback;
     }
 };
+
+const parseStoredInterview = (interview = {}) => ({
+    ...interview,
+    chat_history: normalizeStoredJson(interview.chat_history, []),
+    assessment_summary: normalizeStoredJson(interview.assessment_summary, {}),
+    scored_questions: normalizeStoredJson(interview.scored_questions, []),
+    ignored_questions: normalizeStoredJson(interview.ignored_questions, []),
+    proctoring_counts: normalizeStoredJson(interview.proctoring_counts, {}),
+    proctoring_events: normalizeStoredJson(interview.proctoring_events, [])
+});
 
 // PDF text extractor — pdf-parse@1.1.1 exports a simple async function
 async function extractPdfText(buffer) {
@@ -161,9 +159,16 @@ const upload = multer({
 
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const MODEL_NAME = 'llama3.2:1b'; // Lightweight, fits in 1.5GB RAM but extremely smart
-const MAX_INTERVIEW_QUESTIONS = 20;
-const CORRECT_ANSWERS_PER_STAR = 4;
-const SHORTLIST_CORRECT_THRESHOLD = 15;
+const INTERVIEW_CONFIG = {
+    maxQuestions: 20,
+    correctAnswersPerStar: 4,
+    shortlistCorrectThreshold: 15
+};
+const {
+    maxQuestions: MAX_INTERVIEW_QUESTIONS,
+    correctAnswersPerStar: CORRECT_ANSWERS_PER_STAR,
+    shortlistCorrectThreshold: SHORTLIST_CORRECT_THRESHOLD
+} = INTERVIEW_CONFIG;
 
 let aiInterviewSchemaReady = false;
 
@@ -187,6 +192,17 @@ const ensureAiInterviewSchema = async () => {
 };
 
 const normalizeText = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const buildFallbackQuestion = (skill = '', askedQuestions = []) => {
+    const focusedQuestion = generateFocusedQuestion(skill, askedQuestions);
+    if (focusedQuestion) return focusedQuestion;
+
+    const cleanSkill = normalizeText(skill);
+    if (cleanSkill) {
+        return `Can you explain how you used ${cleanSkill} in one project from your resume?`;
+    }
+    return 'Can you explain one technical challenge you solved in a project from your resume?';
+};
 
 const normalizeSkill = (skill = '') => normalizeText(skill)
     .toLowerCase()
@@ -214,14 +230,20 @@ const isTechnicalQuestion = (question = '') => {
         'syntax for creating a pdf'
     ];
     if (blocked.some((phrase) => q.includes(phrase))) return false;
+    const technicalStarters = [
+        'how ', 'what ', 'why ', 'when ', 'which ', 'can ', 'could ', 'would ',
+        'do ', 'does ', 'did ', 'explain ', 'describe ', 'choose '
+    ];
     const technicalSignals = [
         'explain', 'describe', 'difference', 'how do you', 'what is', 'why', 'when would',
         'implement', 'debug', 'optimize', 'design', 'api', 'database', 'sql', 'java',
         'python', 'react', 'node', 'express', 'algorithm', 'data structure', 'oop',
         'pandas', 'machine learning', 'model', 'component', 'state', 'query', 'index',
-        'authentication', 'backend', 'frontend', 'server', 'cloud', 'docker'
+        'authentication', 'backend', 'frontend', 'server', 'cloud', 'docker',
+        'technical challenge', 'tradeoff', 'reliability', 'performance', 'security', 'bug'
     ];
-    return technicalSignals.some((signal) => q.includes(signal));
+    return technicalStarters.some((starter) => q.startsWith(starter)) ||
+        technicalSignals.some((signal) => q.includes(signal));
 };
 
 const tokenize = (text = '') => {
@@ -251,8 +273,13 @@ const classifyAnswer = (question = '', answer = '') => {
     const overlap = questionTokens.filter((token) => answerSet.has(token)).length;
     const lengthScore = cleanAnswer.length >= 160 ? 2 : cleanAnswer.length >= 80 ? 1 : 0;
     const conceptScore = overlap >= 3 ? 2 : overlap >= 1 ? 1 : 0;
-    const explanationScore = /\b(because|for example|such as|means|used to|helps|works|handles|prevents|improves|ensures)\b/i.test(lowerAnswer) ? 1 : 0;
-    const score = Math.min(5, lengthScore + conceptScore + explanationScore);
+    const explanationScore = /\b(because|for example|such as|means|used to|helps|works|handles|prevents|improves|ensures|trade-?off|accuracy|performance|security|reliability|debug|testing|validation|monitoring|latency|scaling)\b/i.test(lowerAnswer) ? 1 : 0;
+    const structureScore = /[,.]/.test(cleanAnswer) || /\b(and|but|so|then|after|before|while)\b/i.test(lowerAnswer) ? 1 : 0;
+    const score = Math.min(5, lengthScore + conceptScore + explanationScore + structureScore);
+
+    if ((conceptScore >= 2 && (explanationScore >= 1 || structureScore >= 1)) || (cleanAnswer.length >= 45 && overlap >= 2)) {
+        return { verdict: 'correct', score: Math.max(score, 4), correct: true, reason: 'The answer is relevant and technically aligned with the question.' };
+    }
 
     if (score >= 4) {
         return { verdict: 'correct', score, correct: true, reason: 'The answer is relevant and includes useful technical explanation.' };
@@ -277,6 +304,9 @@ const buildViolationSummary = (proctoringCounts = {}, proctoringEvents = []) => 
     const events = Array.isArray(proctoringEvents) ? proctoringEvents.slice(0, 200) : [];
     return { counts, total, events };
 };
+
+const buildRating = (correctCount = 0) =>
+    Math.max(0, Math.min(5, Math.ceil(correctCount / CORRECT_ANSWERS_PER_STAR)));
 
 const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringCounts = {}, proctoringEvents = []) => {
     const normalized = Array.isArray(chatHistory) ? chatHistory : [];
@@ -316,7 +346,7 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
 
     const limitedScored = scoredQuestions.slice(0, MAX_INTERVIEW_QUESTIONS);
     const correctCount = limitedScored.filter((item) => item.correct).length;
-    const rating = Math.max(0, Math.min(5, Math.ceil(correctCount / CORRECT_ANSWERS_PER_STAR)));
+    const rating = buildRating(correctCount);
     const shortlisted = correctCount >= SHORTLIST_CORRECT_THRESHOLD;
 
     const verdictCounts = limitedScored.reduce((acc, item) => {
@@ -333,7 +363,7 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
 
     const summaryText = [
         `The AI interview scored ${correctCount} correct answer${correctCount === 1 ? '' : 's'} out of ${limitedScored.length} technical question${limitedScored.length === 1 ? '' : 's'}.`,
-        `Rating is ${rating}/5 using 4 correct answers per star.`,
+        `Rating is ${rating}/5 using ${CORRECT_ANSWERS_PER_STAR} correct answers per star.`,
         shortlisted
             ? 'The student is auto-shortlisted for admin interview scheduling.'
             : `The student is not auto-shortlisted because the threshold is ${SHORTLIST_CORRECT_THRESHOLD}/${MAX_INTERVIEW_QUESTIONS}.`,
@@ -364,6 +394,7 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
         }
     };
 };
+
 
 const questionTemplates = {
     python: [
@@ -423,10 +454,10 @@ const questionTemplates = {
 };
 
 const genericTemplates = [
-    'Choose one resume project and explain a technical challenge you solved end to end.',
+    'Choose one resume project and explain a technical challenge you solved end to end?',
     'How would you improve performance, security, or reliability in one project from your resume?',
-    'Explain one bug you might face in your resume project and how you would isolate it.',
-    'Describe one design decision from your resume project and the tradeoff behind it.'
+    'Explain one bug you might face in your resume project and how you would isolate it?',
+    'Describe one design decision from your resume project and the tradeoff behind it?'
 ];
 
 const generateFocusedQuestion = (skill = '', askedQuestions = []) => {
@@ -444,9 +475,14 @@ const recomputeInterviewRowIfNeeded = async (interview) => {
     const chatHistory = Array.isArray(interview.chat_history) ? interview.chat_history : [];
     const existingSummary = `${interview.assessment_summary?.text || ''} ${interview.feedback_comment || ''}`;
     const needsRecompute =
+        chatHistory.length > 0 && (
         !interview.assessment_summary?.text ||
         Number(interview.total_scored_questions || 0) === 0 ||
-        /reportlab|pdf generation|syntax for creating a pdf/i.test(existingSummary);
+        Number(interview.assessment_summary?.maxQuestions || 0) !== MAX_INTERVIEW_QUESTIONS ||
+        Number(interview.assessment_summary?.correctAnswersPerStar || 0) !== CORRECT_ANSWERS_PER_STAR ||
+        Number(interview.assessment_summary?.shortlistThreshold || 0) !== SHORTLIST_CORRECT_THRESHOLD ||
+        /reportlab|pdf generation|syntax for creating a pdf|test mode/i.test(existingSummary)
+        );
     if (!needsRecompute || chatHistory.length === 0) return interview;
 
     const assessment = buildInterviewAssessment(
@@ -492,6 +528,38 @@ const recomputeInterviewRowIfNeeded = async (interview) => {
         shortlisted: assessment.shortlisted,
         result_status: assessment.resultStatus
     };
+};
+
+const mapInterviewListRows = async (rows = [], options = {}) => {
+    const includeEvents = Boolean(options.includeEvents);
+    const data = [];
+
+    for (const row of rows) {
+        const normalized = parseStoredInterview(row);
+        const recomputed = await recomputeInterviewRowIfNeeded(normalized);
+        data.push({
+            id: recomputed.id,
+            student_id: recomputed.student_id,
+            student_name: recomputed.student_name,
+            roll_number: recomputed.roll_number,
+            full_name: recomputed.full_name,
+            email: recomputed.email,
+            institute: recomputed.institute,
+            rating: recomputed.rating,
+            feedback_comment: recomputed.feedback_comment,
+            correct_count: recomputed.correct_count,
+            total_scored_questions: recomputed.total_scored_questions,
+            shortlisted: recomputed.shortlisted,
+            result_status: recomputed.result_status,
+            proctoring_counts: recomputed.proctoring_counts,
+            created_at: recomputed.created_at,
+            ...(includeEvents
+                ? { proctoring_events: recomputed.proctoring_events }
+                : {})
+        });
+    }
+
+    return data;
 };
 
 // Removed In-memory session store. Backend is now 100% STATELESS and immune to server restarts!
@@ -674,7 +742,7 @@ router.post('/chat', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Answer missing' });
         }
 
-        const skillToAsk = currentSkill || 'a real skill or project from the resume';
+        const skillToAsk = normalizeText(currentSkill) || 'a real skill or project from the resume';
         console.log(`--- AI Interview: Received Answer | Skill to ask about: "${skillToAsk}" ---`);
 
         const askedFromFrontend = Array.isArray(req.body.askedQuestions) ? req.body.askedQuestions : [];
@@ -762,7 +830,7 @@ router.post('/chat', async (req, res) => {
         }
 
         if (!finalQuestion || finalQuestion.length < 8 || !isTechnicalQuestion(finalQuestion)) {
-            finalQuestion = `Can you describe how you have used ${skillLabel} in a project?`;
+            finalQuestion = buildFallbackQuestion(skillLabel, allAsked);
         }
 
         console.log('Final question:', finalQuestion);
@@ -786,7 +854,15 @@ router.post('/chat', async (req, res) => {
 
     } catch (error) {
         console.error('AI Interview Chat Error:', error?.response?.data || error.message);
-        res.status(500).json({ success: false, message: 'Failed to get AI response' });
+        const askedQuestions = Array.isArray(req.body?.askedQuestions) ? req.body.askedQuestions : [];
+        const fallbackQuestion = buildFallbackQuestion(req.body?.currentSkill || '', askedQuestions);
+        const history = Array.isArray(req.body?.messages) ? [...req.body.messages] : [];
+        if (req.body?.answer) {
+            history.push({ role: 'user', content: req.body.answer });
+        }
+        history.push({ role: 'assistant', content: fallbackQuestion });
+        const updatedHistory = history.length > 10 ? [history[0], ...history.slice(-8)] : history;
+        res.json({ success: true, message: fallbackQuestion, updatedHistory, fallback: true });
     }
 });
 
@@ -857,34 +933,7 @@ router.get('/results', async (req, res) => {
              LEFT JOIN students s ON s.id::text = ai.student_id OR s.roll_number::text = ai.student_id
              ORDER BY created_at DESC`
         );
-        const data = [];
-        for (const row of result.rows) {
-            const normalized = {
-                ...row,
-                chat_history: typeof row.chat_history === 'string' ? JSON.parse(row.chat_history || '[]') : row.chat_history,
-                assessment_summary: typeof row.assessment_summary === 'string' ? JSON.parse(row.assessment_summary || '{}') : row.assessment_summary,
-                proctoring_counts: typeof row.proctoring_counts === 'string' ? JSON.parse(row.proctoring_counts || '{}') : row.proctoring_counts,
-                proctoring_events: typeof row.proctoring_events === 'string' ? JSON.parse(row.proctoring_events || '[]') : row.proctoring_events,
-            };
-            const recomputed = await recomputeInterviewRowIfNeeded(normalized);
-            data.push({
-                id: recomputed.id,
-                student_id: recomputed.student_id,
-                student_name: recomputed.student_name,
-                roll_number: recomputed.roll_number,
-                full_name: recomputed.full_name,
-                email: recomputed.email,
-                institute: recomputed.institute,
-                rating: recomputed.rating,
-                feedback_comment: recomputed.feedback_comment,
-                correct_count: recomputed.correct_count,
-                total_scored_questions: recomputed.total_scored_questions,
-                shortlisted: recomputed.shortlisted,
-                result_status: recomputed.result_status,
-                proctoring_counts: recomputed.proctoring_counts,
-                created_at: recomputed.created_at
-            });
-        }
+        const data = await mapInterviewListRows(result.rows);
         res.json({ success: true, data });
     } catch (error) {
         console.error('AI Interview Results Error:', error.message);
@@ -913,35 +962,7 @@ const exportAiInterviewResults = async (req, res) => {
              ORDER BY ai.created_at DESC`
         );
 
-        const data = [];
-        for (const row of result.rows) {
-            const normalized = {
-                ...row,
-                chat_history: typeof row.chat_history === 'string' ? JSON.parse(row.chat_history || '[]') : row.chat_history,
-                assessment_summary: typeof row.assessment_summary === 'string' ? JSON.parse(row.assessment_summary || '{}') : row.assessment_summary,
-                proctoring_counts: typeof row.proctoring_counts === 'string' ? JSON.parse(row.proctoring_counts || '{}') : row.proctoring_counts,
-                proctoring_events: typeof row.proctoring_events === 'string' ? JSON.parse(row.proctoring_events || '[]') : row.proctoring_events,
-            };
-            const recomputed = await recomputeInterviewRowIfNeeded(normalized);
-            data.push({
-                id: recomputed.id,
-                student_id: recomputed.student_id,
-                student_name: recomputed.student_name,
-                roll_number: recomputed.roll_number,
-                full_name: recomputed.full_name,
-                email: recomputed.email,
-                institute: recomputed.institute,
-                rating: recomputed.rating,
-                correct_count: recomputed.correct_count,
-                total_scored_questions: recomputed.total_scored_questions,
-                shortlisted: recomputed.shortlisted,
-                result_status: recomputed.result_status,
-                feedback_comment: recomputed.feedback_comment,
-                proctoring_counts: recomputed.proctoring_counts,
-                proctoring_events: recomputed.proctoring_events,
-                created_at: recomputed.created_at
-            });
-        }
+        const data = await mapInterviewListRows(result.rows, { includeEvents: true });
 
         res.json({ success: true, type, data });
     } catch (error) {
@@ -966,35 +987,7 @@ router.get('/results/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Interview not found.' });
         }
 
-        let interview = result.rows[0];
-        // Defensive parsing for older rows where chat_history may be stored as TEXT
-        if (typeof interview.chat_history === 'string') {
-            try {
-                interview.chat_history = JSON.parse(interview.chat_history);
-            } catch (_) {
-                interview.chat_history = [];
-            }
-        } else if (!Array.isArray(interview.chat_history)) {
-            interview.chat_history = [];
-        }
-        ['assessment_summary', 'scored_questions', 'ignored_questions'].forEach((field) => {
-            if (typeof interview[field] === 'string') {
-                try {
-                    interview[field] = JSON.parse(interview[field]);
-                } catch (_) {
-                    interview[field] = field === 'assessment_summary' ? {} : [];
-                }
-            }
-        });
-        ['proctoring_counts', 'proctoring_events'].forEach((field) => {
-            if (typeof interview[field] === 'string') {
-                try {
-                    interview[field] = JSON.parse(interview[field]);
-                } catch (_) {
-                    interview[field] = field === 'proctoring_counts' ? {} : [];
-                }
-            }
-        });
+        let interview = parseStoredInterview(result.rows[0]);
         interview = await recomputeInterviewRowIfNeeded(interview);
 
         res.json({ success: true, data: interview });
@@ -1013,13 +1006,7 @@ router.get('/results/:id/report', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Interview not found.' });
         }
 
-        let interview = result.rows[0];
-        interview.chat_history = normalizeStoredJson(interview.chat_history, []);
-        interview.assessment_summary = normalizeStoredJson(interview.assessment_summary, {});
-        interview.scored_questions = normalizeStoredJson(interview.scored_questions, []);
-        interview.ignored_questions = normalizeStoredJson(interview.ignored_questions, []);
-        interview.proctoring_counts = normalizeStoredJson(interview.proctoring_counts, {});
-        interview.proctoring_events = normalizeStoredJson(interview.proctoring_events, []);
+        let interview = parseStoredInterview(result.rows[0]);
         interview = await recomputeInterviewRowIfNeeded(interview);
 
         const doc = new PDFDocument({ size: 'A4', margin: 50 });
