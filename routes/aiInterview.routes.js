@@ -162,13 +162,25 @@ const MODEL_NAME = 'llama3.2:1b'; // Lightweight, fits in 1.5GB RAM but extremel
 const INTERVIEW_CONFIG = {
     maxQuestions: 20,
     correctAnswersPerStar: 4,
-    shortlistCorrectThreshold: 15
+    shortlistCorrectThreshold: 15,
+    partialAnswerRatingCredit: 0.25,
+    ratingModelVersion: 2
 };
 const {
     maxQuestions: MAX_INTERVIEW_QUESTIONS,
     correctAnswersPerStar: CORRECT_ANSWERS_PER_STAR,
-    shortlistCorrectThreshold: SHORTLIST_CORRECT_THRESHOLD
+    shortlistCorrectThreshold: SHORTLIST_CORRECT_THRESHOLD,
+    partialAnswerRatingCredit: PARTIAL_ANSWER_RATING_CREDIT,
+    ratingModelVersion: RATING_MODEL_VERSION
 } = INTERVIEW_CONFIG;
+const ONBOARDING_PROMPTS = [
+    'Before we start technical questions, can you confirm your audio is clear and you are ready?',
+    'Which project from your resume are you most confident discussing today?'
+];
+const normalizePromptKey = (value = '') => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const NORMALIZED_ONBOARDING_PROMPTS = new Set(
+    ONBOARDING_PROMPTS.map((prompt) => normalizePromptKey(prompt))
+);
 
 let aiInterviewSchemaReady = false;
 
@@ -222,6 +234,7 @@ const isBlockedSkill = (skill = '') => {
 const isTechnicalQuestion = (question = '') => {
     const q = normalizeText(question).toLowerCase();
     if (!q.endsWith('?')) return false;
+    if (q.length < 8) return false;
     const blocked = [
         'ready', 'let us begin', 'let\'s begin', 'how are you', 'tell me about yourself',
         'which programming language did you use to create', 'create this resume',
@@ -232,7 +245,8 @@ const isTechnicalQuestion = (question = '') => {
     if (blocked.some((phrase) => q.includes(phrase))) return false;
     const technicalStarters = [
         'how ', 'what ', 'why ', 'when ', 'which ', 'can ', 'could ', 'would ',
-        'do ', 'does ', 'did ', 'explain ', 'describe ', 'choose '
+        'do ', 'does ', 'did ', 'explain ', 'describe ', 'choose ', 'is ', 'are ',
+        'should ', 'would ', 'will '
     ];
     const technicalSignals = [
         'explain', 'describe', 'difference', 'how do you', 'what is', 'why', 'when would',
@@ -240,7 +254,9 @@ const isTechnicalQuestion = (question = '') => {
         'python', 'react', 'node', 'express', 'algorithm', 'data structure', 'oop',
         'pandas', 'machine learning', 'model', 'component', 'state', 'query', 'index',
         'authentication', 'backend', 'frontend', 'server', 'cloud', 'docker',
-        'technical challenge', 'tradeoff', 'reliability', 'performance', 'security', 'bug'
+        'technical challenge', 'tradeoff', 'reliability', 'performance', 'security', 'bug',
+        'cache', 'caching', 'redis', 'hook', 'hooks', 'webpack', 'websocket',
+        'flexbox', 'grid', 'typescript', 'jwt', 'latency', 'scaling', 'testing'
     ];
     return technicalStarters.some((starter) => q.startsWith(starter)) ||
         technicalSignals.some((signal) => q.includes(signal));
@@ -257,14 +273,105 @@ const tokenize = (text = '') => {
         .match(/[a-z0-9+#.]{3,}/g)?.filter((word) => !stopWords.has(word)) || [];
 };
 
+const clampScore = (value, min = 0, max = 5) => Math.max(min, Math.min(max, value));
+
+const SKILL_CATEGORY_KEYWORDS = {
+    React: ['react', 'jsx', 'hook', 'state', 'props', 'component', 'redux', 'router'],
+    JavaScript: ['javascript', 'promise', 'async', 'await', 'closure', 'event loop', 'callback', 'webpack', 'babel'],
+    Python: ['python', 'django', 'flask', 'pandas', 'numpy', 'decorator', 'generator'],
+    Java: ['java', 'spring', 'jvm', 'interface', 'inheritance', 'polymorphism'],
+    'Node.js': ['node', 'express', 'middleware', 'api', 'endpoint', 'jwt', 'authentication', 'socket', 'websocket'],
+    'SQL / Database': ['sql', 'mysql', 'postgresql', 'mongodb', 'database', 'query', 'join', 'index', 'schema', 'redis', 'cache'],
+    'CSS / HTML': ['css', 'html', 'flexbox', 'grid', 'responsive', 'tailwind', 'bootstrap', 'layout'],
+    'Cloud / DevOps': ['aws', 'azure', 'docker', 'kubernetes', 'deployment', 'nginx', 'linux', 'ci/cd'],
+    'Data Structures': ['array', 'linked list', 'tree', 'graph', 'stack', 'queue', 'algorithm', 'complexity'],
+    TypeScript: ['typescript', 'interface', 'generics', 'enum', 'type safety'],
+    'General / Other': []
+};
+
+const detectSkillCategory = (question = '', answer = '') => {
+    const questionText = String(question || '').toLowerCase();
+    const answerText = String(answer || '').toLowerCase();
+    const combined = `${questionText} ${answerText}`;
+    let bestSkill = 'General / Other';
+    let bestScore = 0;
+
+    Object.entries(SKILL_CATEGORY_KEYWORDS).forEach(([skill, keywords]) => {
+        if (skill === 'General / Other') return;
+        let score = 0;
+        keywords.forEach((keyword) => {
+            if (questionText.includes(keyword)) score += 2;
+            if (answerText.includes(keyword)) score += 1;
+            if (combined.includes(keyword)) score += 1;
+        });
+        if (score > bestScore) {
+            bestScore = score;
+            bestSkill = skill;
+        }
+    });
+
+    return bestScore >= 2 ? bestSkill : 'General / Other';
+};
+
+const analyzeCommunication = (answer = '') => {
+    const cleanAnswer = normalizeText(answer);
+    const lowerAnswer = cleanAnswer.toLowerCase();
+    const words = cleanAnswer ? cleanAnswer.split(/\s+/).filter(Boolean) : [];
+    const wordCount = words.length;
+    const fillerMatches = lowerAnswer.match(/\b(um+|uh+|like|you know|basically|actually|literally|sort of|kind of)\b/g) || [];
+    const hedgeMatches = lowerAnswer.match(/\b(maybe|probably|i think|i guess|not sure|perhaps|might|possibly)\b/g) || [];
+    const confidentSignals = lowerAnswer.match(/\b(i used|i built|i implemented|i solved|i optimized|i designed|we deployed|i improved|i debugged)\b/g) || [];
+    const sentenceCount = cleanAnswer ? cleanAnswer.split(/[.!?]+/).map((part) => part.trim()).filter(Boolean).length : 0;
+    const structured = sentenceCount >= 2 || /[,;]/.test(cleanAnswer);
+
+    let confidenceScore = 2;
+    if (wordCount >= 18) confidenceScore += 1;
+    if (wordCount >= 35) confidenceScore += 1;
+    if (confidentSignals.length > 0) confidenceScore += 1;
+    confidenceScore -= Math.min(2, hedgeMatches.length);
+    confidenceScore -= Math.min(2, Math.floor(fillerMatches.length / 2));
+    confidenceScore = clampScore(confidenceScore, 1, 5);
+
+    let tone = 'neutral';
+    if (confidenceScore >= 4 && hedgeMatches.length === 0) tone = 'confident';
+    else if (hedgeMatches.length >= 2 || /don'?t know|not sure|no idea|maybe/.test(lowerAnswer)) tone = 'uncertain';
+    else if (structured && wordCount >= 12) tone = 'professional';
+
+    return {
+        fillerCount: fillerMatches.length,
+        hedgeCount: hedgeMatches.length,
+        confidenceScore,
+        tone,
+        wordCount
+    };
+};
+
 const classifyAnswer = (question = '', answer = '') => {
     const cleanAnswer = normalizeText(answer);
     const lowerAnswer = cleanAnswer.toLowerCase();
+    const skillCategory = detectSkillCategory(question, answer);
+    const communication = analyzeCommunication(answer);
     if (!cleanAnswer || cleanAnswer.length < 3) {
-        return { verdict: 'incorrect', score: 0, correct: false, reason: 'No meaningful answer was provided.' };
+        return {
+            verdict: 'incorrect',
+            score: 0,
+            correct: false,
+            reason: 'No meaningful answer was provided.',
+            skillCategory,
+            quality: { contentQuality: 0, clarity: 0, relevance: 0 },
+            communication
+        };
     }
     if (/\b(don'?t know|no idea|not sure|none|nothing|skip|pass)\b/i.test(lowerAnswer)) {
-        return { verdict: 'incorrect', score: 0, correct: false, reason: 'The student did not provide a technical answer.' };
+        return {
+            verdict: 'incorrect',
+            score: 0,
+            correct: false,
+            reason: 'The student did not provide a technical answer.',
+            skillCategory,
+            quality: { contentQuality: 0, clarity: 1, relevance: 0 },
+            communication
+        };
     }
 
     const questionTokens = tokenize(question);
@@ -274,20 +381,57 @@ const classifyAnswer = (question = '', answer = '') => {
     const lengthScore = cleanAnswer.length >= 160 ? 2 : cleanAnswer.length >= 80 ? 1 : 0;
     const conceptScore = overlap >= 3 ? 2 : overlap >= 1 ? 1 : 0;
     const explanationScore = /\b(because|for example|such as|means|used to|helps|works|handles|prevents|improves|ensures|trade-?off|accuracy|performance|security|reliability|debug|testing|validation|monitoring|latency|scaling)\b/i.test(lowerAnswer) ? 1 : 0;
-    const structureScore = /[,.]/.test(cleanAnswer) || /\b(and|but|so|then|after|before|while)\b/i.test(lowerAnswer) ? 1 : 0;
+    const structureScore = /[,.]/.test(cleanAnswer) || /\b(and|but|so|then|after|before|while|first|second|finally)\b/i.test(lowerAnswer) ? 1 : 0;
     const score = Math.min(5, lengthScore + conceptScore + explanationScore + structureScore);
+    const quality = {
+        contentQuality: clampScore(1 + lengthScore + explanationScore, 1, 5),
+        clarity: clampScore(1 + structureScore + (communication.wordCount >= 15 ? 1 : 0) - Math.min(1, communication.fillerCount), 1, 5),
+        relevance: clampScore(1 + conceptScore + (score >= 4 ? 1 : 0), 1, 5)
+    };
 
     if ((conceptScore >= 2 && (explanationScore >= 1 || structureScore >= 1)) || (cleanAnswer.length >= 45 && overlap >= 2)) {
-        return { verdict: 'correct', score: Math.max(score, 4), correct: true, reason: 'The answer is relevant and technically aligned with the question.' };
+        return {
+            verdict: 'correct',
+            score: Math.max(score, 4),
+            correct: true,
+            reason: 'The answer is relevant and technically aligned with the question.',
+            skillCategory,
+            quality,
+            communication
+        };
     }
 
     if (score >= 4) {
-        return { verdict: 'correct', score, correct: true, reason: 'The answer is relevant and includes useful technical explanation.' };
+        return {
+            verdict: 'correct',
+            score,
+            correct: true,
+            reason: 'The answer is relevant and includes useful technical explanation.',
+            skillCategory,
+            quality,
+            communication
+        };
     }
     if (score >= 2) {
-        return { verdict: 'partially_correct', score, correct: false, reason: 'The answer is related but lacks enough detail or precision.' };
+        return {
+            verdict: 'partially_correct',
+            score,
+            correct: false,
+            reason: 'The answer is related but lacks enough detail or precision.',
+            skillCategory,
+            quality,
+            communication
+        };
     }
-    return { verdict: 'incorrect', score, correct: false, reason: 'The answer is too short, vague, or not technically relevant.' };
+    return {
+        verdict: 'incorrect',
+        score,
+        correct: false,
+        reason: 'The answer is too short, vague, or not technically relevant.',
+        skillCategory,
+        quality,
+        communication
+    };
 };
 
 const buildViolationSummary = (proctoringCounts = {}, proctoringEvents = []) => {
@@ -305,8 +449,14 @@ const buildViolationSummary = (proctoringCounts = {}, proctoringEvents = []) => 
     return { counts, total, events };
 };
 
-const buildRating = (correctCount = 0) =>
-    Math.max(0, Math.min(5, Math.ceil(correctCount / CORRECT_ANSWERS_PER_STAR)));
+const buildRating = (correctCount = 0, partialCount = 0) =>
+    Math.max(
+        0,
+        Math.min(
+            5,
+            Number(((Number(correctCount || 0) / CORRECT_ANSWERS_PER_STAR) + (Number(partialCount || 0) * PARTIAL_ANSWER_RATING_CREDIT)).toFixed(1))
+        )
+    );
 
 const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringCounts = {}, proctoringEvents = []) => {
     const normalized = Array.isArray(chatHistory) ? chatHistory : [];
@@ -338,7 +488,10 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
                 verdict: assessment.verdict,
                 score: assessment.score,
                 correct: assessment.correct,
-                reason: assessment.reason
+                reason: assessment.reason,
+                skillCategory: assessment.skillCategory,
+                quality: assessment.quality,
+                communication: assessment.communication
             });
             pendingQuestion = null;
         }
@@ -346,7 +499,8 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
 
     const limitedScored = scoredQuestions.slice(0, MAX_INTERVIEW_QUESTIONS);
     const correctCount = limitedScored.filter((item) => item.correct).length;
-    const rating = buildRating(correctCount);
+    const partialCount = limitedScored.filter((item) => item.verdict === 'partially_correct').length;
+    const rating = buildRating(correctCount, partialCount);
     const shortlisted = correctCount >= SHORTLIST_CORRECT_THRESHOLD;
 
     const verdictCounts = limitedScored.reduce((acc, item) => {
@@ -360,10 +514,67 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
         .filter((item) => item.verdict !== 'correct')
         .slice(0, 5)
         .map((item) => item.question);
+    const averages = limitedScored.reduce((acc, item) => {
+        acc.contentQuality += Number(item.quality?.contentQuality || 0);
+        acc.clarity += Number(item.quality?.clarity || 0);
+        acc.relevance += Number(item.quality?.relevance || 0);
+        acc.confidence += Number(item.communication?.confidenceScore || 0);
+        acc.fillerCount += Number(item.communication?.fillerCount || 0);
+        return acc;
+    }, { contentQuality: 0, clarity: 0, relevance: 0, confidence: 0, fillerCount: 0 });
+    const divisor = Math.max(1, limitedScored.length);
+    const communicationToneCounts = limitedScored.reduce((acc, item) => {
+        const tone = item.communication?.tone || 'neutral';
+        acc[tone] = (acc[tone] || 0) + 1;
+        return acc;
+    }, {});
+    const dominantTone = Object.entries(communicationToneCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
+    const skillBreakdown = limitedScored.reduce((acc, item) => {
+        const skill = item.skillCategory || 'General / Other';
+        if (!acc[skill]) {
+            acc[skill] = {
+                total: 0,
+                correct: 0,
+                partial: 0,
+                incorrect: 0,
+                averageScore: 0,
+                averageContentQuality: 0,
+                averageConfidence: 0
+            };
+        }
+        acc[skill].total += 1;
+        acc[skill].averageScore += Number(item.score || 0);
+        acc[skill].averageContentQuality += Number(item.quality?.contentQuality || 0);
+        acc[skill].averageConfidence += Number(item.communication?.confidenceScore || 0);
+        if (item.verdict === 'correct') acc[skill].correct += 1;
+        else if (item.verdict === 'partially_correct') acc[skill].partial += 1;
+        else acc[skill].incorrect += 1;
+        return acc;
+    }, {});
+    Object.values(skillBreakdown).forEach((entry) => {
+        const skillDivisor = Math.max(1, entry.total);
+        entry.averageScore = Number((entry.averageScore / skillDivisor).toFixed(1));
+        entry.averageContentQuality = Number((entry.averageContentQuality / skillDivisor).toFixed(1));
+        entry.averageConfidence = Number((entry.averageConfidence / skillDivisor).toFixed(1));
+    });
+    const qualitySummary = {
+        contentQuality: Number((averages.contentQuality / divisor).toFixed(1)),
+        clarity: Number((averages.clarity / divisor).toFixed(1)),
+        relevance: Number((averages.relevance / divisor).toFixed(1))
+    };
+    const communicationSummary = {
+        confidence: Number((averages.confidence / divisor).toFixed(1)),
+        fillerWords: averages.fillerCount,
+        fillerWordsPerAnswer: Number((averages.fillerCount / divisor).toFixed(1)),
+        dominantTone,
+        toneCounts: communicationToneCounts
+    };
 
     const summaryText = [
         `The AI interview scored ${correctCount} correct answer${correctCount === 1 ? '' : 's'} out of ${limitedScored.length} technical question${limitedScored.length === 1 ? '' : 's'}.`,
-        `Rating is ${rating}/5 using ${CORRECT_ANSWERS_PER_STAR} correct answers per star.`,
+        `Rating is ${rating}/5 using ${CORRECT_ANSWERS_PER_STAR} correct answers per star plus ${PARTIAL_ANSWER_RATING_CREDIT} rating for each partial answer.`,
+        `Answer quality averages: content ${qualitySummary.contentQuality}/5, clarity ${qualitySummary.clarity}/5, relevance ${qualitySummary.relevance}/5.`,
+        `Communication analysis: confidence ${communicationSummary.confidence}/5, filler words ${communicationSummary.fillerWords}, tone mostly ${communicationSummary.dominantTone}.`,
         shortlisted
             ? 'The student is auto-shortlisted for admin interview scheduling.'
             : `The student is not auto-shortlisted because the threshold is ${SHORTLIST_CORRECT_THRESHOLD}/${MAX_INTERVIEW_QUESTIONS}.`,
@@ -386,10 +597,15 @@ const buildInterviewAssessment = (chatHistory = [], resumeText = '', proctoringC
             text: summaryText,
             maxQuestions: MAX_INTERVIEW_QUESTIONS,
             correctAnswersPerStar: CORRECT_ANSWERS_PER_STAR,
+            partialAnswerRatingCredit: PARTIAL_ANSWER_RATING_CREDIT,
+            ratingModelVersion: RATING_MODEL_VERSION,
             shortlistThreshold: SHORTLIST_CORRECT_THRESHOLD,
             verdictCounts,
             skills,
             weakAreas,
+            qualitySummary,
+            communicationSummary,
+            skillBreakdown,
             violations: violationSummary
         }
     };
@@ -480,6 +696,8 @@ const recomputeInterviewRowIfNeeded = async (interview) => {
         Number(interview.total_scored_questions || 0) === 0 ||
         Number(interview.assessment_summary?.maxQuestions || 0) !== MAX_INTERVIEW_QUESTIONS ||
         Number(interview.assessment_summary?.correctAnswersPerStar || 0) !== CORRECT_ANSWERS_PER_STAR ||
+        Number(interview.assessment_summary?.partialAnswerRatingCredit || 0) !== PARTIAL_ANSWER_RATING_CREDIT ||
+        Number(interview.assessment_summary?.ratingModelVersion || 0) !== RATING_MODEL_VERSION ||
         Number(interview.assessment_summary?.shortlistThreshold || 0) !== SHORTLIST_CORRECT_THRESHOLD ||
         /reportlab|pdf generation|syntax for creating a pdf|test mode/i.test(existingSummary)
         );
@@ -750,11 +968,27 @@ router.post('/chat', async (req, res) => {
             .filter((m) => m.role === 'assistant' && m.content)
             .map((m) => {
                 const match = m.content.match(/^[^?]*\?/);
-                return match ? match[0].trim() : m.content.substring(0, 80).trim();
+                return match ? match[0].trim() : '';
             })
-            .filter((q) => q.length > 5);
+            .filter((q) => q.length > 5 && q.endsWith('?'));
         const allAsked = [...new Set([...askedFromFrontend, ...askedFromHistory])];
-        if (allAsked.filter(isTechnicalQuestion).length >= MAX_INTERVIEW_QUESTIONS) {
+        const onboardingAskedCount = allAsked.filter((question) =>
+            NORMALIZED_ONBOARDING_PROMPTS.has(normalizePromptKey(question))
+        ).length;
+        const technicalAskedCount = Math.max(0, allAsked.length - onboardingAskedCount);
+
+        if (onboardingAskedCount < ONBOARDING_PROMPTS.length) {
+            const onboardingPrompt = ONBOARDING_PROMPTS[onboardingAskedCount];
+            messages.push({ role: 'user', content: answer });
+            messages.push({ role: 'assistant', content: onboardingPrompt });
+            const updatedHistory = messages.length > 10 ? [messages[0], ...messages.slice(-8)] : messages;
+            return res.json({
+                success: true,
+                message: onboardingPrompt,
+                updatedHistory
+            });
+        }
+        if (technicalAskedCount >= MAX_INTERVIEW_QUESTIONS) {
             return res.json({
                 success: true,
                 completed: true,
@@ -1036,17 +1270,42 @@ router.get('/results/:id/report', async (req, res) => {
         writePdfSectionTitle(doc, 'Scored Technical Questions');
         if (Array.isArray(interview.scored_questions) && interview.scored_questions.length > 0) {
             interview.scored_questions.forEach((item) => {
-                ensurePdfSpace(doc, 78);
-                const top = doc.y;
                 const boxWidth = doc.page.width - 100;
-                doc.roundedRect(50, top, boxWidth, 64, 8).stroke('#e2e8f0');
+                const textWidth = boxWidth - 24;
+                const questionText = String(item.question || '-');
+                const reasonText = String(item.reason || '-');
+
+                doc.font('Helvetica-Bold').fontSize(10);
+                const questionHeight = doc.heightOfString(questionText, { width: textWidth });
+                doc.font('Helvetica').fontSize(9);
+                const reasonHeight = doc.heightOfString(reasonText, { width: textWidth });
+                const boxHeight = Math.max(64, 40 + questionHeight + 8 + reasonHeight + 12);
+
+                ensurePdfSpace(doc, boxHeight + 14);
+                const top = doc.y;
+                doc.roundedRect(50, top, boxWidth, boxHeight, 8).stroke('#e2e8f0');
                 doc.fillColor('#5b5ba8').font('Helvetica-Bold').fontSize(10).text(`Q${item.number || ''}`, 62, top + 10);
-                doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(10).text(String(item.question || '-'), 62, top + 24, { width: boxWidth - 24 });
-                doc.fillColor('#64748b').font('Helvetica').fontSize(9).text(String(item.reason || '-'), 62, top + 42, { width: boxWidth - 24 });
-                doc.y = top + 74;
+                doc.fillColor('#1e1e3f').font('Helvetica-Bold').fontSize(10).text(questionText, 62, top + 24, { width: textWidth });
+                doc.fillColor('#64748b').font('Helvetica').fontSize(9).text(reasonText, 62, top + 24 + questionHeight + 8, { width: textWidth });
+                doc.y = top + boxHeight + 10;
             });
         } else {
             doc.fillColor('#64748b').font('Helvetica').fontSize(10).text('No scored technical questions available.');
+        }
+
+        writePdfSectionTitle(doc, 'Ignored / Non-scored Prompts');
+        if (Array.isArray(interview.ignored_questions) && interview.ignored_questions.length > 0) {
+            interview.ignored_questions.forEach((item, idx) => {
+                ensurePdfSpace(doc, 48);
+                const top = doc.y;
+                const boxWidth = doc.page.width - 100;
+                doc.roundedRect(50, top, boxWidth, 42, 8).stroke('#fcd34d');
+                doc.fillColor('#92400e').font('Helvetica-Bold').fontSize(9).text(`Prompt ${idx + 1}`, 62, top + 8);
+                doc.fillColor('#1e1e3f').font('Helvetica').fontSize(9).text(String(item?.question || '-'), 62, top + 20, { width: boxWidth - 24 });
+                doc.y = top + 52;
+            });
+        } else {
+            doc.fillColor('#64748b').font('Helvetica').fontSize(10).text('No ignored prompts.');
         }
 
         writePdfSectionTitle(doc, 'Interview Transcript');
